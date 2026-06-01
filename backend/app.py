@@ -5,10 +5,19 @@ from flask_cors import CORS
 from pydantic import ValidationError
 
 from .config import ensure_runtime_dirs
-from .schemas import BaseModelDownloadRequest, RagConfigRequest, RagPromptRequest, TrainingRequest
+from .schemas import (
+    BaseModelDownloadRequest,
+    BatchDeleteRequest,
+    KnowledgeSourceRequest,
+    PromptAssetRequest,
+    RagConfigRequest,
+    RagPromptRequest,
+    TrainingRequest,
+)
 from .services.dataset_service import DatasetValidationError
 from .services.model_service import ModelService
 from .services.rag_service import RagService
+from .services.resource_service import ResourceService
 from .services.training_service import TrainingService
 from .storage import Registry
 
@@ -17,6 +26,7 @@ registry = Registry()
 model_service = ModelService(registry)
 training_service = TrainingService(registry)
 rag_service = RagService(registry)
+resource_service = ResourceService(registry)
 
 
 def create_app() -> Flask:
@@ -65,6 +75,64 @@ def create_app() -> Flask:
     @app.get("/api/download-jobs")
     def list_download_jobs():
         return jsonify({"items": model_service.list_download_jobs()})
+
+    @app.get("/api/resources/knowledge-sources")
+    def list_knowledge_sources():
+        return jsonify({"items": resource_service.list_knowledge_sources()})
+
+    @app.post("/api/resources/knowledge-sources")
+    def create_knowledge_source():
+        knowledge_file = request.files.get("knowledge_file")
+        if not knowledge_file:
+            return jsonify({"detail": "请上传知识源文件。"}), 422
+        payload = {
+            "name": request.form.get("name"),
+            "source_type": request.form.get("source_type", "text"),
+            "description": request.form.get("description", ""),
+        }
+        source_request = KnowledgeSourceRequest.model_validate(payload)
+        item = resource_service.create_knowledge_source(source_request, knowledge_file)
+        return jsonify({"item": item}), 201
+
+    @app.delete("/api/resources/knowledge-sources/<item_id>")
+    def delete_knowledge_source(item_id: str):
+        if not resource_service.delete_knowledge_source(item_id):
+            return jsonify({"detail": "知识源不存在。"}), 404
+        return jsonify({"ok": True})
+
+    @app.post("/api/resources/knowledge-sources/batch-delete")
+    def batch_delete_knowledge_sources():
+        payload = request.get_json(silent=True) or {}
+        batch_request = BatchDeleteRequest.model_validate(payload)
+        return jsonify(resource_service.batch_delete_knowledge_sources(batch_request.ids))
+
+    @app.get("/api/resources/prompts")
+    def list_prompt_assets():
+        return jsonify({"items": resource_service.list_prompt_assets()})
+
+    @app.post("/api/resources/prompts")
+    def create_prompt_asset():
+        payload = {
+            "name": request.form.get("name"),
+            "prompt_type": request.form.get("prompt_type", "system"),
+            "description": request.form.get("description", ""),
+            "content": request.form.get("content", ""),
+        }
+        prompt_request = PromptAssetRequest.model_validate(payload)
+        item = resource_service.create_prompt_asset(prompt_request, request.files.get("prompt_file"))
+        return jsonify({"item": item}), 201
+
+    @app.delete("/api/resources/prompts/<item_id>")
+    def delete_prompt_asset(item_id: str):
+        if not resource_service.delete_prompt_asset(item_id):
+            return jsonify({"detail": "提示词不存在。"}), 404
+        return jsonify({"ok": True})
+
+    @app.post("/api/resources/prompts/batch-delete")
+    def batch_delete_prompt_assets():
+        payload = request.get_json(silent=True) or {}
+        batch_request = BatchDeleteRequest.model_validate(payload)
+        return jsonify(resource_service.batch_delete_prompt_assets(batch_request.ids))
 
     @app.delete("/api/download-jobs/<job_id>")
     def delete_download_job_history(job_id: str):

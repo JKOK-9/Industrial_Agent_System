@@ -13,7 +13,9 @@ import {
   Layers,
   PackageCheck,
   Play,
+  Plus,
   RefreshCw,
+  Search,
   Settings,
   Terminal,
   Trash2,
@@ -28,6 +30,7 @@ const pages = {
   rag: { title: "RAG模型配置", tab: "RAG封装", subtitle: "选择基座模型、上传文档并配置问答提示词" },
   base: { title: "基座模型管理", tab: "模型仓库", subtitle: "下载、登记和维护训练可用的基座模型" },
   models: { title: "微调模型管理", tab: "模型产物", subtitle: "管理训练完成后的微调模型" },
+  resources: { title: "资源库管理", tab: "资源资产", subtitle: "管理智能体可复用的知识源与提示词" },
 };
 
 const currentPage = ref("train");
@@ -35,9 +38,17 @@ const baseModels = ref([]);
 const downloadJobs = ref([]);
 const trainingJobs = ref([]);
 const fineTunedModels = ref([]);
+const knowledgeSources = ref([]);
+const promptAssets = ref([]);
 const selectedJobId = ref("");
 const logContent = ref("");
 const toastText = ref("");
+const resourceTab = ref("knowledge");
+const resourceSearch = ref("");
+const showKnowledgeForm = ref(false);
+const showPromptForm = ref(false);
+const selectedKnowledgeIds = ref([]);
+const selectedPromptIds = ref([]);
 let toastTimer = 0;
 let pollTimer = 0;
 
@@ -77,22 +88,49 @@ const ragForm = reactive({
   prompt: "",
 });
 
+const knowledgeForm = reactive({
+  name: "",
+  source_type: "text",
+  description: "",
+});
+
+const promptForm = reactive({
+  name: "",
+  prompt_type: "system",
+  description: "",
+  content: "",
+});
+
 const datasetFile = ref(null);
 const ragFile = ref(null);
+const knowledgeFile = ref(null);
+const promptFile = ref(null);
 const datasetFileName = computed(() => datasetFile.value?.name || "选择 JSON / JSONL 文件");
 const ragFileName = computed(() => ragFile.value?.name || "选择 TXT / MD / JSON / CSV 文件");
+const knowledgeFileName = computed(() => knowledgeFile.value?.name || "选择知识源文件");
+const promptFileName = computed(() => promptFile.value?.name || "可选：上传提示词文件");
 const readyBaseModels = computed(() => baseModels.value.filter((model) => model.status === "ready"));
 const selectedJob = computed(() => trainingJobs.value.find((job) => job.id === selectedJobId.value));
 const latestDownloadJobs = computed(() => downloadJobs.value.slice(0, 4));
 const latestTrainingJobs = computed(() => trainingJobs.value.slice(0, 5));
 const ragModels = computed(() => fineTunedModels.value.filter((model) => model.model_type === "rag"));
 const latestRagModels = computed(() => ragModels.value.slice(0, 5));
+const filteredKnowledgeSources = computed(() => filterResources(knowledgeSources.value));
+const filteredPromptAssets = computed(() => filterResources(promptAssets.value));
+const allFilteredKnowledgeSelected = computed(
+  () => filteredKnowledgeSources.value.length > 0 && filteredKnowledgeSources.value.every((item) => selectedKnowledgeIds.value.includes(item.id)),
+);
+const allFilteredPromptSelected = computed(
+  () => filteredPromptAssets.value.length > 0 && filteredPromptAssets.value.every((item) => selectedPromptIds.value.includes(item.id)),
+);
 
 const counters = computed(() => ({
   base: readyBaseModels.value.length,
   jobs: trainingJobs.value.length,
   models: fineTunedModels.value.length,
   rag: ragModels.value.length,
+  knowledge: knowledgeSources.value.length,
+  prompts: promptAssets.value.length,
 }));
 
 const runningJobs = computed(() => trainingJobs.value.filter((job) => ["queued", "running"].includes(job.status)).length);
@@ -126,7 +164,14 @@ function switchPage(page) {
 }
 
 async function refreshAll() {
-  await Promise.all([loadBaseModels(), loadDownloadJobs(), loadTrainingJobs(), loadFineTunedModels()]);
+  await Promise.all([
+    loadBaseModels(),
+    loadDownloadJobs(),
+    loadTrainingJobs(),
+    loadFineTunedModels(),
+    loadKnowledgeSources(),
+    loadPromptAssets(),
+  ]);
 }
 
 async function loadBaseModels() {
@@ -156,6 +201,18 @@ async function loadTrainingJobs() {
 async function loadFineTunedModels() {
   const payload = await fetchJSON("/api/models/finetuned");
   fineTunedModels.value = payload.items || [];
+}
+
+async function loadKnowledgeSources() {
+  const payload = await fetchJSON("/api/resources/knowledge-sources");
+  knowledgeSources.value = payload.items || [];
+  selectedKnowledgeIds.value = selectedKnowledgeIds.value.filter((id) => knowledgeSources.value.some((item) => item.id === id));
+}
+
+async function loadPromptAssets() {
+  const payload = await fetchJSON("/api/resources/prompts");
+  promptAssets.value = payload.items || [];
+  selectedPromptIds.value = selectedPromptIds.value.filter((id) => promptAssets.value.some((item) => item.id === id));
 }
 
 async function submitDownload() {
@@ -193,6 +250,24 @@ function onDatasetChange(event) {
 
 function onRagFileChange(event) {
   ragFile.value = event.target.files?.[0] || null;
+}
+
+function onKnowledgeFileChange(event) {
+  knowledgeFile.value = event.target.files?.[0] || null;
+}
+
+function onPromptFileChange(event) {
+  promptFile.value = event.target.files?.[0] || null;
+}
+
+function filterResources(items) {
+  const keyword = resourceSearch.value.trim().toLowerCase();
+  if (!keyword) return items;
+  return items.filter((item) =>
+    [item.name, item.description, item.type_label, item.original_name, item.preview]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(keyword)),
+  );
 }
 
 async function submitTraining() {
@@ -253,6 +328,63 @@ async function submitRagModel() {
   await refreshAll();
 }
 
+async function submitKnowledgeSource() {
+  if (!knowledgeFile.value) {
+    showToast("请选择知识源文件");
+    return;
+  }
+  const form = new FormData();
+  Object.entries(knowledgeForm).forEach(([key, value]) => {
+    form.append(key, value);
+  });
+  form.append("knowledge_file", knowledgeFile.value);
+
+  await fetchJSON("/api/resources/knowledge-sources", {
+    method: "POST",
+    body: form,
+  });
+  knowledgeFile.value = null;
+  document.getElementById("knowledge-file").value = "";
+  Object.assign(knowledgeForm, {
+    name: "",
+    source_type: "text",
+    description: "",
+  });
+  showKnowledgeForm.value = false;
+  showToast("知识源已添加");
+  await loadKnowledgeSources();
+}
+
+async function submitPromptAsset() {
+  if (!promptFile.value && !promptForm.content.trim()) {
+    showToast("请填写提示词内容或上传提示词文件");
+    return;
+  }
+  const form = new FormData();
+  Object.entries(promptForm).forEach(([key, value]) => {
+    form.append(key, value);
+  });
+  if (promptFile.value) {
+    form.append("prompt_file", promptFile.value);
+  }
+
+  await fetchJSON("/api/resources/prompts", {
+    method: "POST",
+    body: form,
+  });
+  promptFile.value = null;
+  document.getElementById("prompt-file").value = "";
+  Object.assign(promptForm, {
+    name: "",
+    prompt_type: "system",
+    description: "",
+    content: "",
+  });
+  showPromptForm.value = false;
+  showToast("提示词已添加");
+  await loadPromptAssets();
+}
+
 async function deleteFineTunedModel(model) {
   const modelLabel = model.model_type === "rag" ? "RAG模型" : "微调模型";
   if (!window.confirm(`删除${modelLabel} ${model.display_name}？`)) return;
@@ -277,6 +409,74 @@ async function deleteDownloadJobHistory(job) {
   await fetchJSON(`/api/download-jobs/${job.id}`, { method: "DELETE" });
   showToast("下载任务记录已删除");
   await refreshAll();
+}
+
+async function deleteKnowledgeSource(item) {
+  if (!window.confirm(`删除知识源 ${item.name}？`)) return;
+  await fetchJSON(`/api/resources/knowledge-sources/${item.id}`, { method: "DELETE" });
+  selectedKnowledgeIds.value = selectedKnowledgeIds.value.filter((id) => id !== item.id);
+  showToast("知识源已删除");
+  await loadKnowledgeSources();
+}
+
+async function deletePromptAsset(item) {
+  if (!window.confirm(`删除提示词 ${item.name}？`)) return;
+  await fetchJSON(`/api/resources/prompts/${item.id}`, { method: "DELETE" });
+  selectedPromptIds.value = selectedPromptIds.value.filter((id) => id !== item.id);
+  showToast("提示词已删除");
+  await loadPromptAssets();
+}
+
+function toggleKnowledgeSelection(id) {
+  selectedKnowledgeIds.value = selectedKnowledgeIds.value.includes(id)
+    ? selectedKnowledgeIds.value.filter((itemId) => itemId !== id)
+    : [...selectedKnowledgeIds.value, id];
+}
+
+function togglePromptSelection(id) {
+  selectedPromptIds.value = selectedPromptIds.value.includes(id)
+    ? selectedPromptIds.value.filter((itemId) => itemId !== id)
+    : [...selectedPromptIds.value, id];
+}
+
+function setAllKnowledgeSelection(event) {
+  selectedKnowledgeIds.value = event.target.checked ? filteredKnowledgeSources.value.map((item) => item.id) : [];
+}
+
+function setAllPromptSelection(event) {
+  selectedPromptIds.value = event.target.checked ? filteredPromptAssets.value.map((item) => item.id) : [];
+}
+
+async function batchDeleteKnowledgeSources() {
+  if (!selectedKnowledgeIds.value.length) {
+    showToast("请选择知识源");
+    return;
+  }
+  if (!window.confirm(`删除选中的 ${selectedKnowledgeIds.value.length} 个知识源？`)) return;
+  await fetchJSON("/api/resources/knowledge-sources/batch-delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: selectedKnowledgeIds.value }),
+  });
+  selectedKnowledgeIds.value = [];
+  showToast("知识源已批量删除");
+  await loadKnowledgeSources();
+}
+
+async function batchDeletePromptAssets() {
+  if (!selectedPromptIds.value.length) {
+    showToast("请选择提示词");
+    return;
+  }
+  if (!window.confirm(`删除选中的 ${selectedPromptIds.value.length} 个提示词？`)) return;
+  await fetchJSON("/api/resources/prompts/batch-delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: selectedPromptIds.value }),
+  });
+  selectedPromptIds.value = [];
+  showToast("提示词已批量删除");
+  await loadPromptAssets();
 }
 
 function statusText(status) {
@@ -304,6 +504,21 @@ function methodText(model) {
   if (model.model_type === "rag" || model.training_method === "rag") return "RAG";
   if (model.training_method === "lora") return "LoRA";
   return model.training_method || "-";
+}
+
+function formatSize(value) {
+  if (!value) return "-";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function statsText(item) {
+  if (item.stats?.rows) return `${item.stats.rows} 行`;
+  if (item.stats?.items) return `${item.stats.items} 项`;
+  if (item.stats?.lines) return `${item.stats.lines} 行`;
+  if (item.stats?.chars) return `${item.stats.chars} 字符`;
+  return formatSize(item.size_bytes);
 }
 
 function formatDate(value) {
@@ -340,7 +555,7 @@ onUnmounted(() => {
     <div class="app-body">
       <aside class="side-nav">
         <nav class="domain-menu">
-          <button class="menu-parent active" type="button">
+          <button class="menu-parent" :class="{ active: ['train', 'rag', 'base', 'models'].includes(currentPage) }" type="button">
             <Layers />
             <span>垂直领域大语言模型微调</span>
             <ChevronDown />
@@ -365,6 +580,19 @@ onUnmounted(() => {
           </div>
         </nav>
 
+        <nav class="domain-menu">
+          <button class="menu-parent" :class="{ active: currentPage === 'resources' }" type="button">
+            <PackageCheck />
+            <span>智能体构建与管理</span>
+            <ChevronDown />
+          </button>
+          <div class="sub-menu">
+            <button :class="{ active: currentPage === 'resources' }" type="button" @click="switchPage('resources')">
+              <Database />
+              <span>资源库管理</span>
+            </button>
+          </div>
+        </nav>
       </aside>
 
       <main class="content">
@@ -661,6 +889,230 @@ onUnmounted(() => {
               </div>
             </section>
           </div>
+        </section>
+
+        <section v-if="currentPage === 'resources'" class="resource-page">
+          <section class="resource-shell panel-card">
+            <div class="resource-toolbar">
+              <div class="resource-tabs">
+                <button :class="{ active: resourceTab === 'knowledge' }" type="button" @click="resourceTab = 'knowledge'">
+                  <Database />
+                  <span>知识库</span>
+                  <em>{{ counters.knowledge }}</em>
+                </button>
+                <button :class="{ active: resourceTab === 'prompts' }" type="button" @click="resourceTab = 'prompts'">
+                  <Terminal />
+                  <span>提示词</span>
+                  <em>{{ counters.prompts }}</em>
+                </button>
+              </div>
+              <div class="resource-actions">
+                <div class="search-field">
+                  <Search />
+                  <input v-model="resourceSearch" placeholder="搜索" />
+                </div>
+                <button
+                  v-if="resourceTab === 'knowledge'"
+                  class="primary-button"
+                  type="button"
+                  @click="showKnowledgeForm = !showKnowledgeForm"
+                >
+                  <Plus />
+                  <span>添加知识源</span>
+                </button>
+                <button v-else class="primary-button" type="button" @click="showPromptForm = !showPromptForm">
+                  <Plus />
+                  <span>添加提示词</span>
+                </button>
+              </div>
+            </div>
+
+            <form v-if="resourceTab === 'knowledge' && showKnowledgeForm" class="resource-form" @submit.prevent="submitKnowledgeSource">
+              <div class="form-grid resource-form-grid">
+                <label>
+                  <span>知识源名称</span>
+                  <input v-model="knowledgeForm.name" required placeholder="设备维护手册" />
+                </label>
+                <label>
+                  <span>知识源类型</span>
+                  <select v-model="knowledgeForm.source_type">
+                    <option value="text">文本</option>
+                    <option value="markdown">Markdown</option>
+                    <option value="json">JSON</option>
+                    <option value="table">表格</option>
+                  </select>
+                </label>
+                <label>
+                  <span>描述</span>
+                  <input v-model="knowledgeForm.description" placeholder="用于运维问答" />
+                </label>
+                <label class="upload-field">
+                  <input id="knowledge-file" type="file" accept=".txt,.md,.json,.jsonl,.csv,.tsv" @change="onKnowledgeFileChange" />
+                  <FileUp />
+                  <span>{{ knowledgeFileName }}</span>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button class="secondary-button" type="button" @click="showKnowledgeForm = false">取消</button>
+                <button class="primary-button" type="submit">
+                  <UploadCloud />
+                  <span>上传</span>
+                </button>
+              </div>
+            </form>
+
+            <form v-if="resourceTab === 'prompts' && showPromptForm" class="resource-form" @submit.prevent="submitPromptAsset">
+              <div class="form-grid resource-form-grid">
+                <label>
+                  <span>提示词名称</span>
+                  <input v-model="promptForm.name" required placeholder="运维问答系统提示词" />
+                </label>
+                <label>
+                  <span>提示词类型</span>
+                  <select v-model="promptForm.prompt_type">
+                    <option value="system">系统提示词</option>
+                    <option value="instruction">任务指令</option>
+                    <option value="template">模板</option>
+                    <option value="other">其他</option>
+                  </select>
+                </label>
+                <label>
+                  <span>描述</span>
+                  <input v-model="promptForm.description" placeholder="默认回答约束" />
+                </label>
+                <label class="upload-field">
+                  <input id="prompt-file" type="file" accept=".txt,.md,.json" @change="onPromptFileChange" />
+                  <FileUp />
+                  <span>{{ promptFileName }}</span>
+                </label>
+              </div>
+              <label class="prompt-content-field">
+                <span>提示词内容</span>
+                <textarea v-model="promptForm.content" maxlength="20000" placeholder="请输入提示词内容"></textarea>
+              </label>
+              <div class="form-actions">
+                <button class="secondary-button" type="button" @click="showPromptForm = false">取消</button>
+                <button class="primary-button" type="submit">
+                  <UploadCloud />
+                  <span>上传</span>
+                </button>
+              </div>
+            </form>
+
+            <div v-if="resourceTab === 'knowledge'" class="resource-table-block">
+              <div class="resource-batchbar">
+                <span>已选 {{ selectedKnowledgeIds.length }} 项</span>
+                <button class="secondary-button danger-text" type="button" @click="batchDeleteKnowledgeSources">
+                  <Trash2 />
+                  <span>批量删除</span>
+                </button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th class="select-col">
+                        <input class="row-check" type="checkbox" :checked="allFilteredKnowledgeSelected" @change="setAllKnowledgeSelection" />
+                      </th>
+                      <th>知识源</th>
+                      <th>类型</th>
+                      <th>文件</th>
+                      <th>编辑时间</th>
+                      <th class="action-col">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!filteredKnowledgeSources.length">
+                      <td colspan="6" class="empty">暂无知识源</td>
+                    </tr>
+                    <tr v-for="item in filteredKnowledgeSources" :key="item.id">
+                      <td class="select-col">
+                        <input
+                          class="row-check"
+                          type="checkbox"
+                          :checked="selectedKnowledgeIds.includes(item.id)"
+                          @change="toggleKnowledgeSelection(item.id)"
+                        />
+                      </td>
+                      <td>
+                        <strong>{{ item.name }}</strong>
+                        <small>{{ item.description || item.preview || "-" }}</small>
+                      </td>
+                      <td><span class="tag processing">{{ item.type_label }}</span></td>
+                      <td>
+                        <span>{{ item.original_name || item.stored_name }}</span>
+                        <small>{{ statsText(item) }} · {{ formatSize(item.size_bytes) }}</small>
+                      </td>
+                      <td>{{ formatDate(item.updated_at) }}</td>
+                      <td class="action-col">
+                        <button class="text-button danger-text" type="button" @click="deleteKnowledgeSource(item)">
+                          <Trash2 />
+                          <span>删除</span>
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div v-if="resourceTab === 'prompts'" class="resource-table-block">
+              <div class="resource-batchbar">
+                <span>已选 {{ selectedPromptIds.length }} 项</span>
+                <button class="secondary-button danger-text" type="button" @click="batchDeletePromptAssets">
+                  <Trash2 />
+                  <span>批量删除</span>
+                </button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th class="select-col">
+                        <input class="row-check" type="checkbox" :checked="allFilteredPromptSelected" @change="setAllPromptSelection" />
+                      </th>
+                      <th>提示词</th>
+                      <th>类型</th>
+                      <th>内容摘要</th>
+                      <th>编辑时间</th>
+                      <th class="action-col">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!filteredPromptAssets.length">
+                      <td colspan="6" class="empty">暂无提示词</td>
+                    </tr>
+                    <tr v-for="item in filteredPromptAssets" :key="item.id">
+                      <td class="select-col">
+                        <input
+                          class="row-check"
+                          type="checkbox"
+                          :checked="selectedPromptIds.includes(item.id)"
+                          @change="togglePromptSelection(item.id)"
+                        />
+                      </td>
+                      <td>
+                        <strong>{{ item.name }}</strong>
+                        <small>{{ item.description || item.original_name || "-" }}</small>
+                      </td>
+                      <td><span class="tag">{{ item.type_label }}</span></td>
+                      <td>
+                        <span>{{ item.preview || "-" }}</span>
+                        <small>{{ formatSize(item.size_bytes) }}</small>
+                      </td>
+                      <td>{{ formatDate(item.updated_at) }}</td>
+                      <td class="action-col">
+                        <button class="text-button danger-text" type="button" @click="deletePromptAsset(item)">
+                          <Trash2 />
+                          <span>删除</span>
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
         </section>
 
         <section v-if="currentPage === 'base'" class="page-stack">
