@@ -5,9 +5,10 @@ from flask_cors import CORS
 from pydantic import ValidationError
 
 from .config import ensure_runtime_dirs
-from .schemas import BaseModelDownloadRequest, TrainingRequest
+from .schemas import BaseModelDownloadRequest, RagConfigRequest, RagPromptRequest, TrainingRequest
 from .services.dataset_service import DatasetValidationError
 from .services.model_service import ModelService
+from .services.rag_service import RagService
 from .services.training_service import TrainingService
 from .storage import Registry
 
@@ -15,6 +16,7 @@ from .storage import Registry
 registry = Registry()
 model_service = ModelService(registry)
 training_service = TrainingService(registry)
+rag_service = RagService(registry)
 
 
 def create_app() -> Flask:
@@ -112,6 +114,28 @@ def create_app() -> Flask:
     @app.get("/api/training/jobs/<job_id>/logs")
     def training_logs(job_id: str):
         return training_service.read_logs(job_id), 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+    @app.post("/api/rag/models")
+    def create_rag_model():
+        knowledge_file = request.files.get("knowledge_file")
+        if not knowledge_file:
+            return jsonify({"detail": "请上传 RAG 数据文件。"}), 422
+
+        payload = {
+            "model_id": request.form.get("model_id"),
+            "display_name": request.form.get("display_name"),
+            "domain": request.form.get("domain", ""),
+            "prompt": request.form.get("prompt"),
+        }
+        rag_request = RagConfigRequest.model_validate(payload)
+        model = rag_service.create_rag_model(rag_request, knowledge_file)
+        return jsonify({"model": model}), 201
+
+    @app.post("/api/rag/models/<model_id>/prompt")
+    def build_rag_prompt(model_id: str):
+        payload = request.get_json(silent=True) or {}
+        prompt_request = RagPromptRequest.model_validate(payload)
+        return jsonify(rag_service.build_prompt(model_id, prompt_request.question, prompt_request.top_k))
 
     @app.delete("/api/training/jobs/<job_id>")
     def delete_training_job_history(job_id: str):

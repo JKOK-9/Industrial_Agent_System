@@ -24,9 +24,10 @@ import {
 const apiBase = import.meta.env.VITE_API_BASE_URL || "";
 
 const pages = {
-  train: { title: "微调训练", tab: "训练任务", subtitle: "选择基座模型、上传数据并提交 LoRA 微调任务" },
-  base: { title: "基座模型", tab: "模型仓库", subtitle: "下载、登记和维护训练可用的基座模型" },
-  models: { title: "微调模型", tab: "模型产物", subtitle: "管理训练完成后的微调模型" },
+  train: { title: "微调模型训练", tab: "训练任务", subtitle: "选择基座模型、上传数据并提交 LoRA 微调任务" },
+  rag: { title: "RAG模型配置", tab: "RAG封装", subtitle: "选择基座模型、上传文档并配置问答提示词" },
+  base: { title: "基座模型管理", tab: "模型仓库", subtitle: "下载、登记和维护训练可用的基座模型" },
+  models: { title: "微调模型管理", tab: "模型产物", subtitle: "管理训练完成后的微调模型" },
 };
 
 const currentPage = ref("train");
@@ -69,17 +70,29 @@ const trainingForm = reactive({
   bf16: false,
 });
 
+const ragForm = reactive({
+  model_id: "",
+  display_name: "",
+  domain: "",
+  prompt: "",
+});
+
 const datasetFile = ref(null);
+const ragFile = ref(null);
 const datasetFileName = computed(() => datasetFile.value?.name || "选择 JSON / JSONL 文件");
+const ragFileName = computed(() => ragFile.value?.name || "选择 TXT / MD / JSON / CSV 文件");
 const readyBaseModels = computed(() => baseModels.value.filter((model) => model.status === "ready"));
 const selectedJob = computed(() => trainingJobs.value.find((job) => job.id === selectedJobId.value));
 const latestDownloadJobs = computed(() => downloadJobs.value.slice(0, 4));
 const latestTrainingJobs = computed(() => trainingJobs.value.slice(0, 5));
+const ragModels = computed(() => fineTunedModels.value.filter((model) => model.model_type === "rag"));
+const latestRagModels = computed(() => ragModels.value.slice(0, 5));
 
 const counters = computed(() => ({
   base: readyBaseModels.value.length,
   jobs: trainingJobs.value.length,
   models: fineTunedModels.value.length,
+  rag: ragModels.value.length,
 }));
 
 const runningJobs = computed(() => trainingJobs.value.filter((job) => ["queued", "running"].includes(job.status)).length);
@@ -121,6 +134,9 @@ async function loadBaseModels() {
   baseModels.value = payload.items || [];
   if (!trainingForm.model_id && readyBaseModels.value.length) {
     trainingForm.model_id = readyBaseModels.value[0].id;
+  }
+  if (!ragForm.model_id && readyBaseModels.value.length) {
+    ragForm.model_id = readyBaseModels.value[0].id;
   }
 }
 
@@ -175,6 +191,10 @@ function onDatasetChange(event) {
   datasetFile.value = event.target.files?.[0] || null;
 }
 
+function onRagFileChange(event) {
+  ragFile.value = event.target.files?.[0] || null;
+}
+
 async function submitTraining() {
   if (!datasetFile.value) {
     showToast("请选择微调数据文件");
@@ -206,10 +226,38 @@ async function loadLogs(jobId) {
   logContent.value = (await response.text()) || "暂无日志";
 }
 
+async function submitRagModel() {
+  if (!ragFile.value) {
+    showToast("请选择 RAG 数据文件");
+    return;
+  }
+  const form = new FormData();
+  Object.entries(ragForm).forEach(([key, value]) => {
+    form.append(key, value);
+  });
+  form.append("knowledge_file", ragFile.value);
+
+  await fetchJSON("/api/rag/models", {
+    method: "POST",
+    body: form,
+  });
+  ragFile.value = null;
+  document.getElementById("rag-file").value = "";
+  Object.assign(ragForm, {
+    model_id: readyBaseModels.value[0]?.id || "",
+    display_name: "",
+    domain: "",
+    prompt: "",
+  });
+  showToast("RAG模型已封装");
+  await refreshAll();
+}
+
 async function deleteFineTunedModel(model) {
-  if (!window.confirm(`删除微调模型 ${model.display_name}？`)) return;
+  const modelLabel = model.model_type === "rag" ? "RAG模型" : "微调模型";
+  if (!window.confirm(`删除${modelLabel} ${model.display_name}？`)) return;
   await fetchJSON(`/api/models/finetuned/${model.id}`, { method: "DELETE" });
-  showToast("微调模型已删除");
+  showToast(`${modelLabel}已删除`);
   await refreshAll();
 }
 
@@ -250,6 +298,12 @@ function statusClass(status) {
   if (["failed", "interrupted"].includes(status)) return "danger";
   if (["pending", "queued", "running", "downloading"].includes(status)) return "processing";
   return "default";
+}
+
+function methodText(model) {
+  if (model.model_type === "rag" || model.training_method === "rag") return "RAG";
+  if (model.training_method === "lora") return "LoRA";
+  return model.training_method || "-";
 }
 
 function formatDate(value) {
@@ -294,15 +348,19 @@ onUnmounted(() => {
           <div class="sub-menu">
             <button :class="{ active: currentPage === 'train' }" type="button" @click="switchPage('train')">
               <Activity />
-              <span>微调训练</span>
+              <span>微调模型训练</span>
+            </button>
+            <button :class="{ active: currentPage === 'rag' }" type="button" @click="switchPage('rag')">
+              <Terminal />
+              <span>RAG模型配置</span>
             </button>
             <button :class="{ active: currentPage === 'base' }" type="button" @click="switchPage('base')">
               <Database />
-              <span>基座模型</span>
+              <span>基座模型管理</span>
             </button>
             <button :class="{ active: currentPage === 'models' }" type="button" @click="switchPage('models')">
               <Archive />
-              <span>微调模型</span>
+              <span>微调模型管理</span>
             </button>
           </div>
         </nav>
@@ -509,6 +567,102 @@ onUnmounted(() => {
           </div>
         </section>
 
+        <section v-if="currentPage === 'rag'" class="rag-page">
+          <section class="dashboard-grid">
+            <div class="metric-card blue-tint">
+              <div class="metric-icon"><Database /></div>
+              <span>可用基座模型</span>
+              <strong>{{ counters.base }}</strong>
+            </div>
+            <div class="metric-card green-tint">
+              <div class="metric-icon"><Terminal /></div>
+              <span>RAG模型</span>
+              <strong>{{ counters.rag }}</strong>
+            </div>
+            <div class="metric-card orange-tint">
+              <div class="metric-icon"><Archive /></div>
+              <span>模型产物</span>
+              <strong>{{ counters.models }}</strong>
+            </div>
+          </section>
+
+          <div class="rag-workbench">
+            <section class="panel-card rag-config">
+              <div class="panel-title">
+                <h2>RAG封装配置</h2>
+                <span class="tag processing">RAG</span>
+              </div>
+              <form class="train-form" @submit.prevent="submitRagModel">
+                <div class="form-grid two">
+                  <label>
+                    <span>基座模型</span>
+                    <select v-model="ragForm.model_id" required>
+                      <option value="">请选择</option>
+                      <option v-for="model in readyBaseModels" :key="model.id" :value="model.id">
+                        {{ model.display_name }}
+                      </option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>模型名称</span>
+                    <input v-model="ragForm.display_name" required placeholder="device-manual-rag" />
+                  </label>
+                  <label>
+                    <span>适用领域</span>
+                    <input v-model="ragForm.domain" placeholder="例如：设备手册问答" />
+                  </label>
+                </div>
+
+                <label>
+                  <span>提示词</span>
+                  <textarea
+                    v-model="ragForm.prompt"
+                    required
+                    maxlength="5000"
+                    placeholder="例如：你是工业设备运维助手，请严格依据资料回答，无法确认时说明缺少依据。"
+                  ></textarea>
+                </label>
+
+                <label class="upload-field">
+                  <input id="rag-file" type="file" accept=".txt,.md,.json,.jsonl,.csv,.tsv" @change="onRagFileChange" />
+                  <FileUp />
+                  <span>{{ ragFileName }}</span>
+                </label>
+
+                <div class="form-actions">
+                  <button class="primary-button" type="submit">
+                    <PackageCheck />
+                    <span>生成RAG模型</span>
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <section class="panel-card">
+              <div class="panel-title">
+                <h2>最近RAG模型</h2>
+                <button class="secondary-button" type="button" @click="loadFineTunedModels"><RefreshCw />刷新</button>
+              </div>
+              <div class="task-list">
+                <article v-for="model in latestRagModels" :key="model.id" class="task-item">
+                  <div class="task-main">
+                    <span>
+                      <strong>{{ model.display_name }}</strong>
+                      <small>{{ model.base_model_name }} · {{ model.rag?.chunk_count || 0 }} chunks</small>
+                      <small v-if="model.rag?.document_name">文档：{{ model.rag.document_name }}</small>
+                    </span>
+                    <em class="tag" :class="statusClass(model.status)">{{ statusText(model.status) }}</em>
+                  </div>
+                  <button class="history-delete" type="button" aria-label="删除RAG模型" @click="deleteFineTunedModel(model)">
+                    <Trash2 />
+                  </button>
+                </article>
+                <div v-if="!ragModels.length" class="empty-state">暂无RAG模型</div>
+              </div>
+            </section>
+          </div>
+        </section>
+
         <section v-if="currentPage === 'base'" class="page-stack">
           <section class="download-hero">
             <div>
@@ -637,7 +791,12 @@ onUnmounted(() => {
                     <td><strong>{{ model.display_name }}</strong></td>
                     <td>{{ model.domain || "-" }}</td>
                     <td>{{ model.base_model_name }}</td>
-                    <td>{{ model.training_method }}</td>
+                    <td>
+                      <span class="tag" :class="model.model_type === 'rag' ? 'processing' : 'default'">{{ methodText(model) }}</span>
+                      <small v-if="model.model_type === 'rag'">
+                        {{ model.rag?.document_name || "知识文档" }} · {{ model.rag?.chunk_count || 0 }} chunks
+                      </small>
+                    </td>
                     <td><span class="tag" :class="statusClass(model.status)">{{ statusText(model.status) }}</span></td>
                     <td class="mono">{{ model.path }}</td>
                     <td class="action-col">

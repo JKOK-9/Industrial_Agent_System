@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BaseModelDownloadRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     display_name: str = Field(min_length=1, max_length=120)
     model_id: str = Field(min_length=1, max_length=300)
     source: Literal["huggingface", "modelscope", "local"] = "huggingface"
@@ -13,6 +15,8 @@ class BaseModelDownloadRequest(BaseModel):
 
 
 class TrainingRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     model_id: str
     output_name: str = Field(min_length=1, max_length=120)
     domain: str = Field(default="", max_length=120)
@@ -32,3 +36,17 @@ class TrainingRequest(BaseModel):
     lora_target: str = "all"
     fp16: bool = True
     bf16: bool = False
+
+
+class RagConfigRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_id: str
+    display_name: str = Field(min_length=1, max_length=120)
+    domain: str = Field(default="", max_length=120)
+    prompt: str = Field(min_length=1, max_length=5000)
+
+
+class RagPromptRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+    top_k: int = Field(default=4, ge=1, le=12)

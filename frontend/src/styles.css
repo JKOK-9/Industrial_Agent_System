@@ -50,7 +50,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -308,6 +309,7 @@ h2 {
 }
 
 .train-page,
+.rag-page,
 .page-stack {
   display: grid;
   gap: 12px;
@@ -465,6 +467,17 @@ h2 {
   grid-area: logs;
 }
 
+.rag-workbench {
+  display: grid;
+  grid-template-columns: minmax(520px, 13fr) minmax(340px, 8fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.rag-config {
+  min-width: 0;
+}
+
 .panel-title {
   display: flex;
   align-items: center;
@@ -505,32 +518,47 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
-  height: 32px;
   border: 1px solid var(--line);
   border-radius: 4px;
-  padding: 0 8px;
   background: #ffffff;
   color: var(--grey-10);
   outline: none;
+}
+
+input,
+select {
+  height: 32px;
+  padding: 0 8px;
+}
+
+textarea {
+  min-height: 132px;
+  padding: 8px;
+  line-height: 20px;
+  resize: vertical;
 }
 
 input[type="checkbox"] {
   accent-color: var(--blue-6);
 }
 
-input::placeholder {
+input::placeholder,
+textarea::placeholder {
   color: var(--grey-6);
 }
 
 input:hover,
-select:hover {
+select:hover,
+textarea:hover {
   border-color: var(--blue-4);
 }
 
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   border-color: var(--blue-6);
   box-shadow: 0 0 0 2px var(--blue-2);
 }
@@ -853,6 +881,10 @@ td small {
       "config"
       "tasks"
       "logs";
+  }
+
+  .rag-workbench {
+    grid-template-columns: 1fr;
   }
 
   .download-form {
