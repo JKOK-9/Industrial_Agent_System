@@ -46,6 +46,8 @@ const agentWorkflows = ref([]);
 const selectedJobId = ref("");
 const logContent = ref("");
 const toastText = ref("");
+const trainingError = ref("");
+const trainingSubmitting = ref(false);
 const resourceTab = ref("knowledge");
 const resourceSearch = ref("");
 const showKnowledgeForm = ref(false);
@@ -163,13 +165,27 @@ async function fetchJSON(url, options = {}) {
     let detail = response.statusText;
     try {
       const payload = await response.json();
-      detail = Array.isArray(payload.detail) ? payload.detail.map((item) => item.msg).join("；") : payload.detail || detail;
+      detail = formatErrorDetail(payload.detail) || detail;
     } catch {
       detail = await response.text();
     }
     throw new Error(detail);
   }
   return response.json();
+}
+
+function formatErrorDetail(detail) {
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        const field = Array.isArray(item.loc) ? item.loc.join(".") : "";
+        return field ? `${field}：${item.msg}` : item.msg;
+      })
+      .filter(Boolean)
+      .join("；");
+  }
+  return detail ? String(detail) : "";
 }
 
 function showToast(message) {
@@ -277,6 +293,7 @@ async function deleteBaseModel(model) {
 
 function onDatasetChange(event) {
   datasetFile.value = event.target.files?.[0] || null;
+  trainingError.value = "";
 }
 
 function onRagFileChange(event) {
@@ -414,8 +431,10 @@ function workflowNodeSummary(node) {
 }
 
 async function submitTraining() {
+  trainingError.value = "";
   if (!datasetFile.value) {
     showToast("请选择微调数据文件");
+    trainingError.value = "请选择微调数据文件。";
     return;
   }
   const form = new FormData();
@@ -424,18 +443,26 @@ async function submitTraining() {
   });
   form.append("dataset_file", datasetFile.value);
 
-  const payload = await fetchJSON("/api/training/jobs", {
-    method: "POST",
-    body: form,
-  });
-  selectedJobId.value = payload.job.id;
-  datasetFile.value = null;
-  document.getElementById("dataset-file").value = "";
-  trainingForm.output_name = "";
-  trainingForm.domain = "";
-  showToast("训练任务已提交");
-  await refreshAll();
-  await loadLogs(payload.job.id);
+  trainingSubmitting.value = true;
+  try {
+    const payload = await fetchJSON("/api/training/jobs", {
+      method: "POST",
+      body: form,
+    });
+    selectedJobId.value = payload.job.id;
+    datasetFile.value = null;
+    document.getElementById("dataset-file").value = "";
+    trainingForm.output_name = "";
+    trainingForm.domain = "";
+    showToast("训练任务已提交");
+    await refreshAll();
+    await loadLogs(payload.job.id);
+  } catch (error) {
+    trainingError.value = error.message || "训练任务提交失败。";
+    showToast(trainingError.value);
+  } finally {
+    trainingSubmitting.value = false;
+  }
 }
 
 async function loadLogs(jobId) {
@@ -927,6 +954,9 @@ onUnmounted(() => {
                   <FileUp />
                   <span>{{ datasetFileName }}</span>
                 </label>
+                <div v-if="trainingError" class="form-error">
+                  {{ trainingError }}
+                </div>
 
                 <div class="param-grid">
                   <label>
@@ -983,9 +1013,9 @@ onUnmounted(() => {
                 </div>
 
                 <div class="form-actions">
-                  <button class="primary-button" type="submit">
+                  <button class="primary-button" type="submit" :disabled="trainingSubmitting">
                     <Play />
-                    <span>开始训练</span>
+                    <span>{{ trainingSubmitting ? "提交中" : "开始训练" }}</span>
                   </button>
                 </div>
               </form>

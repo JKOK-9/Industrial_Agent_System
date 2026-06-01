@@ -966,6 +966,16 @@ textarea:focus {
   justify-content: flex-end;
 }
 
+.form-error {
+  border: 1px solid #ffd2d2;
+  border-radius: 4px;
+  padding: 9px 10px;
+  background: var(--red-1);
+  color: var(--red-5);
+  font-size: 13px;
+  line-height: 20px;
+}
+
 .task-list {
   display: grid;
   gap: 8px;
