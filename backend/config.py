@@ -14,6 +14,7 @@ LOGS_DIR = RUNTIME_DIR / "logs"
 RESOURCES_DIR = RUNTIME_DIR / "resources"
 KNOWLEDGE_DIR = RESOURCES_DIR / "knowledge"
 PROMPTS_DIR = RESOURCES_DIR / "prompts"
+AGENTS_DIR = RUNTIME_DIR / "agents"
 REGISTRY_PATH = RUNTIME_DIR / "registry.json"
 
 LLAMAFACTORY_CLI = os.getenv("LLAMAFACTORY_CLI", "llamafactory-cli")
@@ -31,6 +32,7 @@ def ensure_runtime_dirs() -> None:
         RESOURCES_DIR,
         KNOWLEDGE_DIR,
         PROMPTS_DIR,
+        AGENTS_DIR,
     ]:
         path.mkdir(parents=True, exist_ok=True)
 

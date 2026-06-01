@@ -17,6 +17,7 @@ DEFAULT_REGISTRY = {
     "download_jobs": [],
     "knowledge_sources": [],
     "prompt_assets": [],
+    "agent_workflows": [],
 }
 
 

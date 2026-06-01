@@ -30,7 +30,9 @@ const pages = {
   rag: { title: "RAG模型配置", tab: "RAG封装", subtitle: "选择基座模型、上传文档并配置问答提示词" },
   base: { title: "基座模型管理", tab: "模型仓库", subtitle: "下载、登记和维护训练可用的基座模型" },
   models: { title: "微调模型管理", tab: "模型产物", subtitle: "管理训练完成后的微调模型" },
+  workflow: { title: "智能体工作流构建", tab: "工作流", subtitle: "按顺序添加节点，构建从输入到输出的智能体链路" },
   resources: { title: "资源库管理", tab: "资源资产", subtitle: "管理智能体可复用的知识源与提示词" },
+  agentManage: { title: "智能体管理", tab: "智能体", subtitle: "管理已保存的智能体并测试运行效果" },
 };
 
 const currentPage = ref("train");
@@ -40,6 +42,7 @@ const trainingJobs = ref([]);
 const fineTunedModels = ref([]);
 const knowledgeSources = ref([]);
 const promptAssets = ref([]);
+const agentWorkflows = ref([]);
 const selectedJobId = ref("");
 const logContent = ref("");
 const toastText = ref("");
@@ -49,6 +52,14 @@ const showKnowledgeForm = ref(false);
 const showPromptForm = ref(false);
 const selectedKnowledgeIds = ref([]);
 const selectedPromptIds = ref([]);
+const selectedWorkflowNodeId = ref("input-node");
+const workflowTestInput = ref("");
+const workflowTestResult = ref(null);
+const workflowRunning = ref(false);
+const managedAgentId = ref("");
+const managedAgentTestInput = ref("");
+const managedAgentTestResult = ref(null);
+const managedAgentRunning = ref(false);
 let toastTimer = 0;
 let pollTimer = 0;
 
@@ -101,6 +112,12 @@ const promptForm = reactive({
   content: "",
 });
 
+const workflowForm = reactive({
+  name: "",
+  description: "",
+  nodes: createDefaultWorkflowNodes(),
+});
+
 const datasetFile = ref(null);
 const ragFile = ref(null);
 const knowledgeFile = ref(null);
@@ -114,9 +131,12 @@ const selectedJob = computed(() => trainingJobs.value.find((job) => job.id === s
 const latestDownloadJobs = computed(() => downloadJobs.value.slice(0, 4));
 const latestTrainingJobs = computed(() => trainingJobs.value.slice(0, 5));
 const ragModels = computed(() => fineTunedModels.value.filter((model) => model.model_type === "rag"));
+const trainableFineTunedModels = computed(() => fineTunedModels.value);
 const latestRagModels = computed(() => ragModels.value.slice(0, 5));
 const filteredKnowledgeSources = computed(() => filterResources(knowledgeSources.value));
 const filteredPromptAssets = computed(() => filterResources(promptAssets.value));
+const selectedWorkflowNode = computed(() => workflowForm.nodes.find((node) => node.id === selectedWorkflowNodeId.value));
+const managedAgent = computed(() => agentWorkflows.value.find((agent) => agent.id === managedAgentId.value));
 const allFilteredKnowledgeSelected = computed(
   () => filteredKnowledgeSources.value.length > 0 && filteredKnowledgeSources.value.every((item) => selectedKnowledgeIds.value.includes(item.id)),
 );
@@ -131,6 +151,7 @@ const counters = computed(() => ({
   rag: ragModels.value.length,
   knowledge: knowledgeSources.value.length,
   prompts: promptAssets.value.length,
+  agents: agentWorkflows.value.length,
 }));
 
 const runningJobs = computed(() => trainingJobs.value.filter((job) => ["queued", "running"].includes(job.status)).length);
@@ -171,6 +192,7 @@ async function refreshAll() {
     loadFineTunedModels(),
     loadKnowledgeSources(),
     loadPromptAssets(),
+    loadAgentWorkflows(),
   ]);
 }
 
@@ -213,6 +235,15 @@ async function loadPromptAssets() {
   const payload = await fetchJSON("/api/resources/prompts");
   promptAssets.value = payload.items || [];
   selectedPromptIds.value = selectedPromptIds.value.filter((id) => promptAssets.value.some((item) => item.id === id));
+}
+
+async function loadAgentWorkflows() {
+  const payload = await fetchJSON("/api/agents");
+  agentWorkflows.value = payload.items || [];
+  if (managedAgentId.value && !agentWorkflows.value.some((agent) => agent.id === managedAgentId.value)) {
+    managedAgentId.value = "";
+    managedAgentTestResult.value = null;
+  }
 }
 
 async function submitDownload() {
@@ -268,6 +299,118 @@ function filterResources(items) {
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(keyword)),
   );
+}
+
+function createDefaultWorkflowNodes() {
+  return [
+    { id: "input-node", type: "input", label: "用户输入", config: { variable: "input" } },
+    { id: "output-node", type: "output", label: "结果输出", config: { output_key: "output" } },
+  ];
+}
+
+function createWorkflowNode(type) {
+  const id = `${type}-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`;
+  const labels = {
+    input: "用户输入",
+    output: "结果输出",
+    llm: "大模型",
+    finetuned: "微调模型",
+    knowledge: "知识库",
+  };
+  const config = {
+    input: { variable: "input" },
+    output: { output_key: "output" },
+    llm: {
+      model_id: readyBaseModels.value[0]?.id || "",
+      prompt: "",
+      filter_thinking: true,
+      max_new_tokens: 512,
+      temperature: 0.7,
+      top_p: 0.9,
+    },
+    finetuned: {
+      fine_tuned_model_id: trainableFineTunedModels.value[0]?.id || "",
+      model_id: readyBaseModels.value[0]?.id || "",
+      prompt: "",
+      filter_thinking: true,
+      max_new_tokens: 512,
+      temperature: 0.7,
+      top_p: 0.9,
+      top_k: 4,
+    },
+    knowledge: { knowledge_source_id: knowledgeSources.value[0]?.id || "" },
+  };
+  return { id, type, label: labels[type], config: config[type] };
+}
+
+function addWorkflowNode(type) {
+  const node = createWorkflowNode(type);
+  const outputIndex = workflowForm.nodes.findIndex((item) => item.type === "output");
+  if (outputIndex >= 0 && type !== "output") {
+    workflowForm.nodes.splice(outputIndex, 0, node);
+  } else {
+    workflowForm.nodes.push(node);
+  }
+  selectedWorkflowNodeId.value = node.id;
+}
+
+function removeWorkflowNode(nodeId) {
+  const index = workflowForm.nodes.findIndex((node) => node.id === nodeId);
+  if (index < 0) return;
+  if (workflowForm.nodes[index].type === "input" && index === 0) {
+    showToast("首个用户输入节点不可删除");
+    return;
+  }
+  if (workflowForm.nodes[index].type === "output" && index === workflowForm.nodes.length - 1) {
+    showToast("末尾结果输出节点不可删除");
+    return;
+  }
+  workflowForm.nodes.splice(index, 1);
+  selectedWorkflowNodeId.value = workflowForm.nodes[Math.max(0, index - 1)]?.id || "input-node";
+}
+
+function resetWorkflowBuilder() {
+  Object.assign(workflowForm, {
+    name: "",
+    description: "",
+    nodes: createDefaultWorkflowNodes(),
+  });
+  selectedWorkflowNodeId.value = "input-node";
+  workflowTestInput.value = "";
+  workflowTestResult.value = null;
+}
+
+function loadAgentToBuilder(agent) {
+  Object.assign(workflowForm, {
+    name: agent.name,
+    description: agent.description || "",
+    nodes: JSON.parse(JSON.stringify(agent.nodes || createDefaultWorkflowNodes())),
+  });
+  selectedWorkflowNodeId.value = workflowForm.nodes[0]?.id || "input-node";
+  workflowTestResult.value = null;
+  currentPage.value = "workflow";
+}
+
+function workflowNodeSummary(node) {
+  if (node.type === "input") return "接收用户输入";
+  if (node.type === "output") return "返回最终结果";
+  if (node.type === "knowledge") {
+    const source = knowledgeSources.value.find((item) => item.id === node.config.knowledge_source_id);
+    return source ? `加载：${source.name}` : "选择知识源";
+  }
+  if (node.type === "llm") {
+    const model = baseModels.value.find((item) => item.id === node.config.model_id);
+    return model ? `基座：${model.display_name}` : "选择基座模型";
+  }
+  if (node.type === "finetuned") {
+    const model = fineTunedModels.value.find((item) => item.id === node.config.fine_tuned_model_id);
+    const base = baseModels.value.find((item) => item.id === node.config.model_id);
+    if (model) {
+      return `${methodText(model)}：${model.display_name}`;
+    }
+    return base ? `基座：${base.display_name}` : "选择模型";
+  }
+  return "-";
 }
 
 async function submitTraining() {
@@ -479,6 +622,84 @@ async function batchDeletePromptAssets() {
   await loadPromptAssets();
 }
 
+async function saveAgentWorkflow() {
+  if (!workflowForm.name.trim()) {
+    showToast("请填写智能体名称");
+    return;
+  }
+  const payload = {
+    name: workflowForm.name,
+    description: workflowForm.description,
+    nodes: workflowForm.nodes,
+  };
+  const response = await fetchJSON("/api/agents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  showToast("智能体已保存");
+  await loadAgentWorkflows();
+  managedAgentId.value = response.item.id;
+}
+
+async function runWorkflowPreview() {
+  const payload = {
+    agent: {
+      name: workflowForm.name || "预览智能体",
+      description: workflowForm.description,
+      nodes: workflowForm.nodes,
+    },
+    input_text: workflowTestInput.value,
+  };
+  workflowRunning.value = true;
+  workflowTestResult.value = { output: "模型启动与推理中..." };
+  try {
+    workflowTestResult.value = await fetchJSON("/api/agents/preview-run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    workflowTestResult.value = { output: `运行失败：${error.message}` };
+    showToast(error.message);
+  } finally {
+    workflowRunning.value = false;
+  }
+}
+
+async function runManagedAgent(agent = managedAgent.value) {
+  if (!agent) {
+    showToast("请选择智能体");
+    return;
+  }
+  managedAgentId.value = agent.id;
+  managedAgentRunning.value = true;
+  managedAgentTestResult.value = { output: "模型启动与推理中..." };
+  try {
+    managedAgentTestResult.value = await fetchJSON(`/api/agents/${agent.id}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input_text: managedAgentTestInput.value }),
+    });
+  } catch (error) {
+    managedAgentTestResult.value = { output: `运行失败：${error.message}` };
+    showToast(error.message);
+  } finally {
+    managedAgentRunning.value = false;
+  }
+}
+
+async function deleteAgentWorkflow(agent) {
+  if (!window.confirm(`删除智能体 ${agent.name}？`)) return;
+  await fetchJSON(`/api/agents/${agent.id}`, { method: "DELETE" });
+  if (managedAgentId.value === agent.id) {
+    managedAgentId.value = "";
+    managedAgentTestResult.value = null;
+  }
+  showToast("智能体已删除");
+  await loadAgentWorkflows();
+}
+
 function statusText(status) {
   const map = {
     pending: "等待",
@@ -581,15 +802,23 @@ onUnmounted(() => {
         </nav>
 
         <nav class="domain-menu">
-          <button class="menu-parent" :class="{ active: currentPage === 'resources' }" type="button">
+          <button class="menu-parent" :class="{ active: ['workflow', 'resources', 'agentManage'].includes(currentPage) }" type="button">
             <PackageCheck />
             <span>智能体构建与管理</span>
             <ChevronDown />
           </button>
           <div class="sub-menu">
+            <button :class="{ active: currentPage === 'workflow' }" type="button" @click="switchPage('workflow')">
+              <Activity />
+              <span>智能体工作流构建</span>
+            </button>
             <button :class="{ active: currentPage === 'resources' }" type="button" @click="switchPage('resources')">
               <Database />
               <span>资源库管理</span>
+            </button>
+            <button :class="{ active: currentPage === 'agentManage' }" type="button" @click="switchPage('agentManage')">
+              <Archive />
+              <span>智能体管理</span>
             </button>
           </div>
         </nav>
@@ -891,6 +1120,221 @@ onUnmounted(() => {
           </div>
         </section>
 
+        <section v-if="currentPage === 'workflow'" class="workflow-page">
+          <section class="workflow-header panel-card">
+            <div class="form-grid workflow-name-grid">
+              <label>
+                <span>智能体名称</span>
+                <input v-model="workflowForm.name" required placeholder="设备运维助手" />
+              </label>
+              <label>
+                <span>描述</span>
+                <input v-model="workflowForm.description" placeholder="顺序执行的智能体工作流" />
+              </label>
+            </div>
+            <div class="workflow-header-actions">
+              <button class="secondary-button" type="button" @click="resetWorkflowBuilder">
+                <RefreshCw />
+                <span>重置</span>
+              </button>
+              <button class="primary-button" type="button" @click="saveAgentWorkflow">
+                <PackageCheck />
+                <span>保存智能体</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="workflow-canvas panel-card">
+            <div class="workflow-canvas-grid">
+              <template v-for="(node, index) in workflowForm.nodes" :key="node.id">
+                <button class="workflow-node" :class="{ active: selectedWorkflowNodeId === node.id }" type="button" @click="selectedWorkflowNodeId = node.id">
+                  <span class="workflow-node-icon" :class="`node-${node.type}`">
+                    <Database v-if="node.type === 'knowledge'" />
+                    <Cpu v-else-if="node.type === 'llm' || node.type === 'finetuned'" />
+                    <Terminal v-else-if="node.type === 'output'" />
+                    <Activity v-else />
+                  </span>
+                  <strong>{{ node.label }}</strong>
+                  <small>{{ workflowNodeSummary(node) }}</small>
+                </button>
+                <div v-if="index < workflowForm.nodes.length - 1" class="workflow-link">
+                  <i></i>
+                </div>
+              </template>
+            </div>
+          </section>
+
+          <div class="workflow-builder-grid">
+            <section class="panel-card">
+              <div class="panel-title">
+                <h2>添加节点</h2>
+              </div>
+              <div class="node-palette">
+                <button type="button" @click="addWorkflowNode('input')">
+                  <Activity />
+                  <span>用户输入</span>
+                </button>
+                <button type="button" @click="addWorkflowNode('llm')">
+                  <Cpu />
+                  <span>大模型</span>
+                </button>
+                <button type="button" @click="addWorkflowNode('finetuned')">
+                  <Archive />
+                  <span>微调模型</span>
+                </button>
+                <button type="button" @click="addWorkflowNode('knowledge')">
+                  <Database />
+                  <span>知识库</span>
+                </button>
+                <button type="button" @click="addWorkflowNode('output')">
+                  <Terminal />
+                  <span>结果输出</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="panel-card">
+              <div class="panel-title">
+                <h2>节点配置</h2>
+                <button v-if="selectedWorkflowNode" class="text-button danger-text" type="button" @click="removeWorkflowNode(selectedWorkflowNode.id)">
+                  <Trash2 />
+                  <span>删除节点</span>
+                </button>
+              </div>
+              <div v-if="selectedWorkflowNode" class="node-config-form">
+                <label>
+                  <span>节点名称</span>
+                  <input v-model="selectedWorkflowNode.label" />
+                </label>
+
+                <template v-if="selectedWorkflowNode.type === 'input'">
+                  <label>
+                    <span>输入变量</span>
+                    <input v-model="selectedWorkflowNode.config.variable" placeholder="input" />
+                  </label>
+                </template>
+
+                <template v-if="selectedWorkflowNode.type === 'knowledge'">
+                  <label>
+                    <span>知识源</span>
+                    <select v-model="selectedWorkflowNode.config.knowledge_source_id">
+                      <option value="">请选择知识源</option>
+                      <option v-for="item in knowledgeSources" :key="item.id" :value="item.id">
+                        {{ item.name }}
+                      </option>
+                    </select>
+                  </label>
+                </template>
+
+                <template v-if="selectedWorkflowNode.type === 'llm'">
+                  <label>
+                    <span>基座模型</span>
+                    <select v-model="selectedWorkflowNode.config.model_id">
+                      <option value="">请选择基座模型</option>
+                      <option v-for="model in readyBaseModels" :key="model.id" :value="model.id">
+                        {{ model.display_name }}
+                      </option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>提示词</span>
+                    <textarea v-model="selectedWorkflowNode.config.prompt" placeholder="请输入该节点的大模型提示词"></textarea>
+                  </label>
+                  <div class="form-grid two">
+                    <label>
+                      <span>最大输出 Token</span>
+                      <input v-model.number="selectedWorkflowNode.config.max_new_tokens" type="number" min="1" max="4096" />
+                    </label>
+                    <label>
+                      <span>温度</span>
+                      <input v-model.number="selectedWorkflowNode.config.temperature" type="number" min="0" max="2" step="0.1" />
+                    </label>
+                    <label>
+                      <span>Top P</span>
+                      <input v-model.number="selectedWorkflowNode.config.top_p" type="number" min="0.01" max="1" step="0.01" />
+                    </label>
+                  </div>
+                  <label class="check-line">
+                    <input v-model="selectedWorkflowNode.config.filter_thinking" type="checkbox" />
+                    <span>过滤思考内容</span>
+                  </label>
+                </template>
+
+                <template v-if="selectedWorkflowNode.type === 'finetuned'">
+                  <label>
+                    <span>微调模型</span>
+                    <select v-model="selectedWorkflowNode.config.fine_tuned_model_id">
+                      <option value="">未选择时使用基座模型</option>
+                      <option v-for="model in trainableFineTunedModels" :key="model.id" :value="model.id">
+                        {{ model.display_name }} · {{ methodText(model) }}
+                      </option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>基座模型</span>
+                    <select v-model="selectedWorkflowNode.config.model_id">
+                      <option value="">请选择基座模型</option>
+                      <option v-for="model in readyBaseModels" :key="model.id" :value="model.id">
+                        {{ model.display_name }}
+                      </option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>提示词</span>
+                    <textarea v-model="selectedWorkflowNode.config.prompt" placeholder="请输入该节点的微调模型提示词"></textarea>
+                  </label>
+                  <div class="form-grid two">
+                    <label>
+                      <span>最大输出 Token</span>
+                      <input v-model.number="selectedWorkflowNode.config.max_new_tokens" type="number" min="1" max="4096" />
+                    </label>
+                    <label>
+                      <span>温度</span>
+                      <input v-model.number="selectedWorkflowNode.config.temperature" type="number" min="0" max="2" step="0.1" />
+                    </label>
+                    <label>
+                      <span>Top P</span>
+                      <input v-model.number="selectedWorkflowNode.config.top_p" type="number" min="0.01" max="1" step="0.01" />
+                    </label>
+                    <label>
+                      <span>RAG 召回数</span>
+                      <input v-model.number="selectedWorkflowNode.config.top_k" type="number" min="1" max="12" />
+                    </label>
+                  </div>
+                  <label class="check-line">
+                    <input v-model="selectedWorkflowNode.config.filter_thinking" type="checkbox" />
+                    <span>过滤思考内容</span>
+                  </label>
+                </template>
+
+                <template v-if="selectedWorkflowNode.type === 'output'">
+                  <label>
+                    <span>输出变量</span>
+                    <input v-model="selectedWorkflowNode.config.output_key" placeholder="output" />
+                  </label>
+                </template>
+              </div>
+            </section>
+
+            <section class="panel-card">
+              <div class="panel-title">
+                <h2>试运行</h2>
+                <button class="secondary-button" type="button" :disabled="workflowRunning" @click="runWorkflowPreview">
+                  <Play />
+                  <span>{{ workflowRunning ? "运行中" : "运行" }}</span>
+                </button>
+              </div>
+              <div class="agent-test-panel">
+                <label>
+                  <span>测试输入</span>
+                  <textarea v-model="workflowTestInput" placeholder="输入一段用户问题"></textarea>
+                </label>
+                <pre>{{ workflowTestResult?.output || "暂无运行结果" }}</pre>
+              </div>
+            </section>
+          </div>
+        </section>
+
         <section v-if="currentPage === 'resources'" class="resource-page">
           <section class="resource-shell panel-card">
             <div class="resource-toolbar">
@@ -1113,6 +1557,74 @@ onUnmounted(() => {
               </div>
             </div>
           </section>
+        </section>
+
+        <section v-if="currentPage === 'agentManage'" class="agent-manage-page">
+          <div class="agent-manage-grid">
+            <section class="panel-card">
+              <div class="panel-title">
+                <h2>智能体列表</h2>
+                <button class="secondary-button" type="button" @click="loadAgentWorkflows"><RefreshCw />刷新</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>智能体名称</th>
+                      <th>节点数</th>
+                      <th>状态</th>
+                      <th>更新时间</th>
+                      <th class="action-col">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!agentWorkflows.length">
+                      <td colspan="5" class="empty">暂无智能体</td>
+                    </tr>
+                    <tr v-for="agent in agentWorkflows" :key="agent.id" :class="{ selected: managedAgentId === agent.id }">
+                      <td>
+                        <strong>{{ agent.name }}</strong>
+                        <small>{{ agent.description || "顺序执行链路" }}</small>
+                      </td>
+                      <td>{{ agent.node_count || agent.nodes?.length || 0 }}</td>
+                      <td><span class="tag success">{{ statusText(agent.status) }}</span></td>
+                      <td>{{ formatDate(agent.updated_at) }}</td>
+                      <td class="action-col agent-action-col">
+                        <button class="text-button" type="button" @click="loadAgentToBuilder(agent)">编辑</button>
+                        <button class="text-button" type="button" @click="managedAgentId = agent.id">测试</button>
+                        <button class="text-button danger-text" type="button" @click="deleteAgentWorkflow(agent)">删除</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel-card">
+              <div class="panel-title">
+                <h2>智能体测试</h2>
+                <span class="tag">{{ managedAgent?.name || "未选择" }}</span>
+              </div>
+              <div class="agent-test-panel">
+                <label>
+                  <span>测试输入</span>
+                  <textarea v-model="managedAgentTestInput" placeholder="输入一段用户问题"></textarea>
+                </label>
+                <button class="primary-button" type="button" :disabled="managedAgentRunning" @click="runManagedAgent">
+                  <Play />
+                  <span>{{ managedAgentRunning ? "运行中" : "测试运行" }}</span>
+                </button>
+                <pre>{{ managedAgentTestResult?.output || "选择一个智能体后可测试运行" }}</pre>
+                <div v-if="managedAgentTestResult?.trace?.length" class="trace-list">
+                  <strong>执行轨迹</strong>
+                  <div v-for="item in managedAgentTestResult.trace" :key="`${item.index}-${item.node}`">
+                    <span>{{ item.index }}. {{ item.node }}</span>
+                    <small>{{ item.output }}</small>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
         </section>
 
         <section v-if="currentPage === 'base'" class="page-stack">

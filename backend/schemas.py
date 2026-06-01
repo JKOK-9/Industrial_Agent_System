@@ -67,3 +67,20 @@ class PromptAssetRequest(BaseModel):
 
 class BatchDeleteRequest(BaseModel):
     ids: list[str] = Field(default_factory=list, min_length=1)
+
+
+class WorkflowNode(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    type: Literal["input", "output", "llm", "finetuned", "knowledge"]
+    label: str = Field(min_length=1, max_length=80)
+    config: dict = Field(default_factory=dict)
+
+
+class AgentWorkflowRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=300)
+    nodes: list[WorkflowNode] = Field(default_factory=list, min_length=2)
+
+
+class AgentRunRequest(BaseModel):
+    input_text: str = Field(default="", max_length=8000)

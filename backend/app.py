@@ -6,6 +6,8 @@ from pydantic import ValidationError
 
 from .config import ensure_runtime_dirs
 from .schemas import (
+    AgentRunRequest,
+    AgentWorkflowRequest,
     BaseModelDownloadRequest,
     BatchDeleteRequest,
     KnowledgeSourceRequest,
@@ -15,7 +17,9 @@ from .schemas import (
     TrainingRequest,
 )
 from .services.dataset_service import DatasetValidationError
+from .services.agent_service import AgentService
 from .services.model_service import ModelService
+from .services.model_runtime import ModelRuntime
 from .services.rag_service import RagService
 from .services.resource_service import ResourceService
 from .services.training_service import TrainingService
@@ -27,6 +31,8 @@ model_service = ModelService(registry)
 training_service = TrainingService(registry)
 rag_service = RagService(registry)
 resource_service = ResourceService(registry)
+model_runtime = ModelRuntime()
+agent_service = AgentService(registry, model_runtime, rag_service)
 
 
 def create_app() -> Flask:
@@ -47,6 +53,10 @@ def create_app() -> Flask:
     def handle_value_error(error: ValueError):
         return jsonify({"detail": str(error)}), 400
 
+    @app.errorhandler(RuntimeError)
+    def handle_runtime_error(error: RuntimeError):
+        return jsonify({"detail": str(error)}), 500
+
     @app.get("/api/health")
     def health():
         return jsonify({"status": "ok"})
@@ -54,6 +64,10 @@ def create_app() -> Flask:
     @app.get("/api/models/base")
     def list_base_models():
         return jsonify({"items": model_service.list_base_models()})
+
+    @app.get("/api/models/runtime")
+    def list_loaded_model_sessions():
+        return jsonify({"loaded_models": model_runtime.loaded_models()})
 
     @app.post("/api/models/base/download")
     def download_base_model():
@@ -133,6 +147,42 @@ def create_app() -> Flask:
         payload = request.get_json(silent=True) or {}
         batch_request = BatchDeleteRequest.model_validate(payload)
         return jsonify(resource_service.batch_delete_prompt_assets(batch_request.ids))
+
+    @app.get("/api/agents")
+    def list_agents():
+        return jsonify({"items": agent_service.list_agents()})
+
+    @app.post("/api/agents")
+    def save_agent():
+        payload = request.get_json(silent=True) or {}
+        agent_request = AgentWorkflowRequest.model_validate(payload)
+        return jsonify({"item": agent_service.save_agent(agent_request)}), 201
+
+    @app.get("/api/agents/<agent_id>")
+    def get_agent(agent_id: str):
+        agent = agent_service.get_agent(agent_id)
+        if not agent:
+            return jsonify({"detail": "智能体不存在。"}), 404
+        return jsonify({"item": agent})
+
+    @app.delete("/api/agents/<agent_id>")
+    def delete_agent(agent_id: str):
+        if not agent_service.delete_agent(agent_id):
+            return jsonify({"detail": "智能体不存在。"}), 404
+        return jsonify({"ok": True})
+
+    @app.post("/api/agents/<agent_id>/run")
+    def run_agent(agent_id: str):
+        payload = request.get_json(silent=True) or {}
+        run_request = AgentRunRequest.model_validate(payload)
+        return jsonify(agent_service.run_agent(agent_id, run_request.input_text))
+
+    @app.post("/api/agents/preview-run")
+    def run_agent_preview():
+        payload = request.get_json(silent=True) or {}
+        agent_request = AgentWorkflowRequest.model_validate(payload.get("agent") or {})
+        run_request = AgentRunRequest.model_validate({"input_text": payload.get("input_text", "")})
+        return jsonify(agent_service.run_preview(agent_request, run_request.input_text))
 
     @app.delete("/api/download-jobs/<job_id>")
     def delete_download_job_history(job_id: str):
