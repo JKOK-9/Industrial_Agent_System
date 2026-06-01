@@ -5,3 +5,10 @@ PyYAML==6.0.2
 huggingface-hub>=0.34.0,<1.0
 modelscope==1.37.1
 numpy==2.3.5
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+transformers>=4.51
+accelerate>=0.33
+peft>=0.12
+safetensors>=0.4
+sentencepiece>=0.2

@@ -31,27 +31,26 @@ def save_and_prepare_dataset(
     if suffix not in {".json", ".jsonl"}:
         raise DatasetValidationError("当前仅支持 .json 或 .jsonl 文件。")
 
-    data_path = dataset_dir / f"{dataset_name}{suffix}"
+    uploaded_path = dataset_dir / f"{dataset_name}{suffix}"
     stream = getattr(upload, "stream", upload)
-    with data_path.open("wb") as handle:
+    with uploaded_path.open("wb") as handle:
         while True:
             chunk = stream.read(1024 * 1024)
             if not chunk:
                 break
             handle.write(chunk)
 
-    samples = _load_samples(data_path)
-    _validate_samples(samples, dataset_format)
+    samples = _load_samples(uploaded_path)
+    normalized_samples = _normalize_samples(samples)
 
-    normalized_path = data_path
-    if suffix == ".jsonl":
-        normalized_path = dataset_dir / f"{dataset_name}.json"
-        with normalized_path.open("w", encoding="utf-8") as handle:
-            json.dump(samples, handle, ensure_ascii=False, indent=2)
-        data_path.unlink(missing_ok=True)
+    normalized_path = dataset_dir / f"{dataset_name}.json"
+    with normalized_path.open("w", encoding="utf-8") as handle:
+        json.dump(normalized_samples, handle, ensure_ascii=False, indent=2)
+    if uploaded_path != normalized_path:
+        uploaded_path.unlink(missing_ok=True)
 
     dataset_info = {
-        dataset_name: _dataset_description(normalized_path.name, dataset_format),
+        dataset_name: _dataset_description(normalized_path.name),
     }
     with (dataset_dir / "dataset_info.json").open("w", encoding="utf-8") as handle:
         json.dump(dataset_info, handle, ensure_ascii=False, indent=2)
@@ -60,8 +59,9 @@ def save_and_prepare_dataset(
         "dataset_name": dataset_name,
         "dataset_dir": str(dataset_dir),
         "file_name": normalized_path.name,
-        "sample_count": len(samples),
-        "format": dataset_format,
+        "sample_count": len(normalized_samples),
+        "format": "openai",
+        "requested_format": dataset_format,
     }
 
 
@@ -87,89 +87,142 @@ def _load_samples(path: Path) -> list[dict[str, Any]]:
 
         with path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
+        if isinstance(payload, list):
+            if not all(isinstance(item, dict) for item in payload):
+                raise DatasetValidationError("数据集中的每条样本都必须是 JSON 对象。")
+            return payload
         if isinstance(payload, dict):
             for key in ("data", "train", "rows", "samples"):
                 if isinstance(payload.get(key), list):
-                    payload = payload[key]
-                    break
-        if not isinstance(payload, list):
-            raise DatasetValidationError("JSON 文件顶层必须是数组，或包含 data/train/rows/samples 数组。")
-        if not all(isinstance(item, dict) for item in payload):
-            raise DatasetValidationError("数据集中的每条样本都必须是 JSON 对象。")
-        return payload
+                    rows = payload[key]
+                    if not all(isinstance(item, dict) for item in rows):
+                        raise DatasetValidationError(f"{key} 数组中的每条样本都必须是 JSON 对象。")
+                    return rows
+            if _looks_like_single_sample(payload):
+                return [payload]
+        raise DatasetValidationError("JSON 文件顶层必须是样本数组、单条样本对象，或包含 data/train/rows/samples 数组。")
     except json.JSONDecodeError as exc:
         raise DatasetValidationError(f"JSON 解析失败：{exc.msg}") from exc
 
 
-def _validate_samples(samples: list[dict[str, Any]], dataset_format: DatasetFormat) -> None:
+def _looks_like_single_sample(value: dict[str, Any]) -> bool:
+    return any(
+        key in value
+        for key in (
+            "messages",
+            "conversations",
+            "instruction",
+            "prompt",
+            "question",
+            "query",
+            "input",
+            "output",
+            "response",
+            "answer",
+            "completion",
+        )
+    )
+
+
+def _normalize_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not samples:
         raise DatasetValidationError("数据集不能为空。")
 
-    validators = {
-        "alpaca": _validate_alpaca_sample,
-        "sharegpt": _validate_sharegpt_sample,
-        "openai": _validate_openai_sample,
-    }
-    validator = validators[dataset_format]
-    for index, sample in enumerate(samples[:20], start=1):
-        validator(sample, index)
+    normalized: list[dict[str, Any]] = []
+    for index, sample in enumerate(samples, start=1):
+        normalized.append({"messages": _sample_to_messages(sample, index)})
+    return normalized
 
 
-def _validate_alpaca_sample(sample: dict[str, Any], index: int) -> None:
-    if not sample.get("instruction"):
-        raise DatasetValidationError(f"第 {index} 条 Alpaca 样本缺少 instruction。")
-    if not sample.get("output"):
-        raise DatasetValidationError(f"第 {index} 条 Alpaca 样本缺少 output。")
+def _sample_to_messages(sample: dict[str, Any], index: int) -> list[dict[str, str]]:
+    if isinstance(sample.get("messages"), list):
+        return _normalize_message_list(sample["messages"], index, role_keys=("role", "from"), content_keys=("content", "value", "text"))
+
+    if isinstance(sample.get("conversations"), list):
+        return _normalize_message_list(sample["conversations"], index, role_keys=("from", "role"), content_keys=("value", "content", "text"))
+
+    system = _first_text(sample, ("system", "system_prompt"))
+    instruction = _first_text(sample, ("instruction", "prompt", "question", "query", "task"))
+    input_text = _first_text(sample, ("input", "user", "user_input"))
+    response = _first_text(sample, ("output", "response", "answer", "completion", "assistant", "target"))
+
+    if not instruction and input_text:
+        instruction = input_text
+        input_text = ""
+    if not instruction:
+        raise DatasetValidationError(
+            f"第 {index} 条样本缺少用户输入字段；支持 messages/conversations，或 instruction/prompt/question/query/input。"
+        )
+    if not response:
+        raise DatasetValidationError(f"第 {index} 条样本缺少助手输出字段；支持 output/response/answer/completion/assistant。")
+
+    user_content = instruction
+    if input_text and input_text != instruction:
+        user_content = f"{instruction}\n{input_text}"
+
+    messages: list[dict[str, str]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": user_content})
+    messages.append({"role": "assistant", "content": response})
+    return messages
 
 
-def _validate_sharegpt_sample(sample: dict[str, Any], index: int) -> None:
-    conversations = sample.get("conversations")
-    if not isinstance(conversations, list) or len(conversations) < 2:
-        raise DatasetValidationError(f"第 {index} 条 ShareGPT 样本缺少 conversations。")
-    for message in conversations:
-        if not isinstance(message, dict) or "from" not in message or "value" not in message:
-            raise DatasetValidationError(f"第 {index} 条 ShareGPT 样本消息必须包含 from 和 value。")
+def _normalize_message_list(
+    messages: list[Any],
+    sample_index: int,
+    role_keys: tuple[str, ...],
+    content_keys: tuple[str, ...],
+) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for message_index, message in enumerate(messages, start=1):
+        if not isinstance(message, dict):
+            raise DatasetValidationError(f"第 {sample_index} 条样本的第 {message_index} 条消息必须是 JSON 对象。")
+        role = _normalize_role(_first_text(message, role_keys))
+        content = _first_text(message, content_keys)
+        if not role:
+            raise DatasetValidationError(f"第 {sample_index} 条样本的第 {message_index} 条消息缺少可识别角色。")
+        if not content:
+            raise DatasetValidationError(f"第 {sample_index} 条样本的第 {message_index} 条消息缺少内容。")
+        if role in {"system", "user", "assistant"}:
+            normalized.append({"role": role, "content": content})
+
+    if not any(message["role"] == "user" for message in normalized):
+        raise DatasetValidationError(f"第 {sample_index} 条样本缺少 user/human 消息。")
+    if not any(message["role"] == "assistant" for message in normalized):
+        raise DatasetValidationError(f"第 {sample_index} 条样本缺少 assistant/gpt 消息。")
+    return normalized
 
 
-def _validate_openai_sample(sample: dict[str, Any], index: int) -> None:
-    messages = sample.get("messages")
-    if not isinstance(messages, list) or len(messages) < 2:
-        raise DatasetValidationError(f"第 {index} 条 OpenAI 样本缺少 messages。")
-    for message in messages:
-        if not isinstance(message, dict) or "role" not in message or "content" not in message:
-            raise DatasetValidationError(f"第 {index} 条 OpenAI 样本消息必须包含 role 和 content。")
+def _first_text(mapping: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if value is not None and not isinstance(value, (dict, list)):
+            text = str(value).strip()
+            if text:
+                return text
+    return ""
 
 
-def _dataset_description(file_name: str, dataset_format: DatasetFormat) -> dict[str, Any]:
-    if dataset_format == "alpaca":
-        return {
-            "file_name": file_name,
-            "columns": {
-                "prompt": "instruction",
-                "query": "input",
-                "response": "output",
-                "system": "system",
-                "history": "history",
-            },
-        }
+def _normalize_role(value: str) -> str:
+    role = value.strip().lower()
+    return {
+        "system": "system",
+        "user": "user",
+        "human": "user",
+        "customer": "user",
+        "input": "user",
+        "assistant": "assistant",
+        "gpt": "assistant",
+        "bot": "assistant",
+        "model": "assistant",
+        "output": "assistant",
+    }.get(role, "")
 
-    if dataset_format == "sharegpt":
-        return {
-            "file_name": file_name,
-            "formatting": "sharegpt",
-            "columns": {
-                "messages": "conversations",
-                "system": "system",
-                "tools": "tools",
-            },
-            "tags": {
-                "role_tag": "from",
-                "content_tag": "value",
-                "user_tag": "human",
-                "assistant_tag": "gpt",
-            },
-        }
 
+def _dataset_description(file_name: str) -> dict[str, Any]:
     return {
         "file_name": file_name,
         "formatting": "sharegpt",

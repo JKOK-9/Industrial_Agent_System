@@ -50,3 +50,37 @@ class RagConfigRequest(BaseModel):
 class RagPromptRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=4, ge=1, le=12)
+
+
+class KnowledgeSourceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    source_type: Literal["text", "table", "json", "markdown"] = "text"
+    description: str = Field(default="", max_length=300)
+
+
+class PromptAssetRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    prompt_type: Literal["system", "instruction", "template", "other"] = "system"
+    description: str = Field(default="", max_length=300)
+    content: str = Field(default="", max_length=20000)
+
+
+class BatchDeleteRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list, min_length=1)
+
+
+class WorkflowNode(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    type: Literal["input", "output", "llm", "finetuned", "knowledge"]
+    label: str = Field(min_length=1, max_length=80)
+    config: dict = Field(default_factory=dict)
+
+
+class AgentWorkflowRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=300)
+    nodes: list[WorkflowNode] = Field(default_factory=list, min_length=2)
+
+
+class AgentRunRequest(BaseModel):
+    input_text: str = Field(default="", max_length=8000)

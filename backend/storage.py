@@ -15,6 +15,9 @@ DEFAULT_REGISTRY = {
     "fine_tuned_models": [],
     "training_jobs": [],
     "download_jobs": [],
+    "knowledge_sources": [],
+    "prompt_assets": [],
+    "agent_workflows": [],
 }
 
 
