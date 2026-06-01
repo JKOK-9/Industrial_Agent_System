@@ -64,6 +64,16 @@ def create_app() -> Flask:
     def list_download_jobs():
         return jsonify({"items": model_service.list_download_jobs()})
 
+    @app.delete("/api/download-jobs/<job_id>")
+    def delete_download_job_history(job_id: str):
+        try:
+            deleted = model_service.delete_download_job_history(job_id)
+        except ValueError as exc:
+            return jsonify({"detail": str(exc)}), 409
+        if not deleted:
+            return jsonify({"detail": "下载任务记录不存在。"}), 404
+        return jsonify({"ok": True})
+
     @app.get("/api/training/jobs")
     def list_training_jobs():
         return jsonify({"items": training_service.list_jobs()})
@@ -77,6 +87,7 @@ def create_app() -> Flask:
         payload = {
             "model_id": request.form.get("model_id"),
             "output_name": request.form.get("output_name"),
+            "domain": request.form.get("domain", ""),
             "dataset_format": request.form.get("dataset_format", "alpaca"),
             "training_method": request.form.get("training_method", "lora"),
             "template": request.form.get("template", "default"),
@@ -101,6 +112,16 @@ def create_app() -> Flask:
     @app.get("/api/training/jobs/<job_id>/logs")
     def training_logs(job_id: str):
         return training_service.read_logs(job_id), 200, {"Content-Type": "text/plain; charset=utf-8"}
+
+    @app.delete("/api/training/jobs/<job_id>")
+    def delete_training_job_history(job_id: str):
+        try:
+            deleted = training_service.delete_job_history(job_id)
+        except ValueError as exc:
+            return jsonify({"detail": str(exc)}), 409
+        if not deleted:
+            return jsonify({"detail": "训练任务记录不存在。"}), 404
+        return jsonify({"ok": True})
 
     @app.get("/api/models/finetuned")
     def list_fine_tuned_models():

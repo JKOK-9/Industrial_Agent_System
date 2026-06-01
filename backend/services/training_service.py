@@ -70,6 +70,7 @@ class TrainingService:
             "id": job_id,
             "status": "queued",
             "output_name": request.output_name,
+            "domain": request.domain,
             "base_model_id": base_model["id"],
             "base_model_name": base_model["display_name"],
             "training_method": request.training_method,
@@ -104,6 +105,15 @@ class TrainingService:
         if not path.exists():
             return ""
         return path.read_text(encoding="utf-8", errors="replace")[-20000:]
+
+    def delete_job_history(self, job_id: str) -> bool:
+        job = self.registry.get("training_jobs", job_id)
+        if not job:
+            return False
+        if job.get("status") in {"queued", "running"}:
+            raise ValueError("训练任务仍在进行中，暂不能删除历史记录。")
+        self.registry.delete("training_jobs", job_id)
+        return True
 
     def _build_llamafactory_config(
         self,
@@ -187,6 +197,7 @@ class TrainingService:
                     fine_tuned_model = {
                         "id": uuid.uuid4().hex,
                         "display_name": job["output_name"],
+                        "domain": job.get("domain", ""),
                         "base_model_id": job["base_model_id"],
                         "base_model_name": job["base_model_name"],
                         "training_job_id": job_id,

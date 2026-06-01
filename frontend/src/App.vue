@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import {
   Activity,
   Archive,
+  Bell,
   ChevronDown,
   CircleGauge,
   Cpu,
@@ -49,6 +50,7 @@ const downloadForm = reactive({
 const trainingForm = reactive({
   model_id: "",
   output_name: "",
+  domain: "",
   dataset_format: "alpaca",
   training_method: "lora",
   template: "default",
@@ -192,6 +194,7 @@ async function submitTraining() {
   datasetFile.value = null;
   document.getElementById("dataset-file").value = "";
   trainingForm.output_name = "";
+  trainingForm.domain = "";
   showToast("训练任务已提交");
   await refreshAll();
   await loadLogs(payload.job.id);
@@ -207,6 +210,24 @@ async function deleteFineTunedModel(model) {
   if (!window.confirm(`删除微调模型 ${model.display_name}？`)) return;
   await fetchJSON(`/api/models/finetuned/${model.id}`, { method: "DELETE" });
   showToast("微调模型已删除");
+  await refreshAll();
+}
+
+async function deleteTrainingJobHistory(job) {
+  if (!window.confirm(`删除训练任务记录 ${job.output_name}？模型文件和微调模型不会被删除。`)) return;
+  await fetchJSON(`/api/training/jobs/${job.id}`, { method: "DELETE" });
+  if (selectedJobId.value === job.id) {
+    selectedJobId.value = "";
+    logContent.value = "";
+  }
+  showToast("训练任务记录已删除");
+  await refreshAll();
+}
+
+async function deleteDownloadJobHistory(job) {
+  if (!window.confirm(`删除下载任务记录 ${job.display_name}？已下载模型不会被删除。`)) return;
+  await fetchJSON(`/api/download-jobs/${job.id}`, { method: "DELETE" });
+  showToast("下载任务记录已删除");
   await refreshAll();
 }
 
@@ -256,6 +277,10 @@ onUnmounted(() => {
         <div class="platform-mark"></div>
         <strong>智能体构建与管理工具组件</strong>
       </div>
+      <div class="header-actions">
+        <button class="round-action" type="button" aria-label="通知"><Bell /></button>
+        <button class="avatar-action" type="button" aria-label="用户"><UserRound /></button>
+      </div>
     </header>
 
     <div class="app-body">
@@ -282,24 +307,6 @@ onUnmounted(() => {
           </div>
         </nav>
 
-        <div class="side-illustration">
-          <div class="avatar-medal"><UserRound /></div>
-        </div>
-
-        <div class="side-stats">
-          <div>
-            <span>基座</span>
-            <strong>{{ counters.base }}</strong>
-          </div>
-          <div>
-            <span>任务</span>
-            <strong>{{ counters.jobs }}</strong>
-          </div>
-          <div>
-            <span>模型</span>
-            <strong>{{ counters.models }}</strong>
-          </div>
-        </div>
       </aside>
 
       <main class="content">
@@ -381,6 +388,10 @@ onUnmounted(() => {
                   <label>
                     <span>输出名称</span>
                     <input v-model="trainingForm.output_name" required placeholder="qwen-customer-lora" />
+                  </label>
+                  <label>
+                    <span>领域</span>
+                    <input v-model="trainingForm.domain" placeholder="例如：工业设备运维" />
                   </label>
                   <label>
                     <span>数据格式</span>
@@ -471,13 +482,19 @@ onUnmounted(() => {
                 <button class="secondary-button" type="button" @click="loadTrainingJobs"><RefreshCw />刷新</button>
               </div>
               <div class="task-list">
-                <button v-for="job in latestTrainingJobs" :key="job.id" type="button" @click="loadLogs(job.id)">
-                  <span>
-                    <strong>{{ job.output_name }}</strong>
-                    <small>{{ job.base_model_name }} · {{ job.dataset?.sample_count || 0 }} samples</small>
-                  </span>
-                  <em class="tag" :class="statusClass(job.status)">{{ statusText(job.status) }}</em>
-                </button>
+                <article v-for="job in latestTrainingJobs" :key="job.id" class="task-item">
+                  <button class="task-main" type="button" @click="loadLogs(job.id)">
+                    <span>
+                      <strong>{{ job.output_name }}</strong>
+                      <small>{{ job.base_model_name }} · {{ job.dataset?.sample_count || 0 }} samples</small>
+                      <small v-if="job.domain">领域：{{ job.domain }}</small>
+                    </span>
+                    <em class="tag" :class="statusClass(job.status)">{{ statusText(job.status) }}</em>
+                  </button>
+                  <button class="history-delete" type="button" aria-label="删除训练任务记录" @click="deleteTrainingJobHistory(job)">
+                    <Trash2 />
+                  </button>
+                </article>
                 <div v-if="!trainingJobs.length" class="empty-state">暂无训练任务</div>
               </div>
             </section>
@@ -580,7 +597,12 @@ onUnmounted(() => {
                     <small>{{ formatDate(job.created_at) }}</small>
                     <p v-if="job.error">{{ job.error }}</p>
                   </div>
-                  <span class="tag" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
+                  <div class="job-actions">
+                    <span class="tag" :class="statusClass(job.status)">{{ statusText(job.status) }}</span>
+                    <button class="history-delete" type="button" aria-label="删除下载任务记录" @click="deleteDownloadJobHistory(job)">
+                      <Trash2 />
+                    </button>
+                  </div>
                 </div>
                 <div v-if="!downloadJobs.length" class="empty-state">暂无下载任务</div>
               </div>
@@ -599,6 +621,7 @@ onUnmounted(() => {
                 <thead>
                   <tr>
                     <th>模型名称</th>
+                    <th>适用领域</th>
                     <th>基座模型</th>
                     <th>方法</th>
                     <th>状态</th>
@@ -608,10 +631,11 @@ onUnmounted(() => {
                 </thead>
                 <tbody>
                   <tr v-if="!fineTunedModels.length">
-                    <td colspan="6" class="empty">暂无数据</td>
+                    <td colspan="7" class="empty">暂无数据</td>
                   </tr>
                   <tr v-for="model in fineTunedModels" :key="model.id">
                     <td><strong>{{ model.display_name }}</strong></td>
+                    <td>{{ model.domain || "-" }}</td>
                     <td>{{ model.base_model_name }}</td>
                     <td>{{ model.training_method }}</td>
                     <td><span class="tag" :class="statusClass(model.status)">{{ statusText(model.status) }}</span></td>

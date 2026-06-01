@@ -72,6 +72,15 @@ class ModelService:
             shutil.rmtree(path)
         return True
 
+    def delete_download_job_history(self, job_id: str) -> bool:
+        job = self.registry.get("download_jobs", job_id)
+        if not job:
+            return False
+        if job.get("status") in {"pending", "running", "downloading"}:
+            raise ValueError("下载任务仍在进行中，暂不能删除历史记录。")
+        self.registry.delete("download_jobs", job_id)
+        return True
+
     def _download_worker(self, request: BaseModelDownloadRequest, model: dict, job: dict) -> None:
         log_path = Path(job["log_path"])
         log_path.parent.mkdir(parents=True, exist_ok=True)

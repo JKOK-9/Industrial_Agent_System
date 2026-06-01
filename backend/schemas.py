@@ -15,6 +15,7 @@ class BaseModelDownloadRequest(BaseModel):
 class TrainingRequest(BaseModel):
     model_id: str
     output_name: str = Field(min_length=1, max_length=120)
+    domain: str = Field(default="", max_length=120)
     dataset_format: Literal["alpaca", "sharegpt", "openai"] = "alpaca"
     training_method: Literal["lora"] = "lora"
     template: str = "default"

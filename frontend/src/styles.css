@@ -77,6 +77,7 @@ svg {
   z-index: 30;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   height: 52px;
   padding: 0 24px;
   border-bottom: 1px solid var(--line);
@@ -89,6 +90,12 @@ svg {
   align-items: center;
   gap: 12px;
   min-width: 0;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .platform-mark {
@@ -105,6 +112,30 @@ svg {
   font-size: 20px;
   line-height: 24px;
   white-space: nowrap;
+}
+
+.round-action,
+.avatar-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--grey-0);
+  color: var(--grey-9);
+}
+
+.round-action:hover,
+.avatar-action:hover {
+  color: var(--blue-6);
+  background: var(--blue-1);
+}
+
+.avatar-action {
+  border-radius: 50%;
+  color: var(--blue-7);
 }
 
 .app-body {
@@ -177,74 +208,6 @@ svg {
   color: var(--blue-6);
   font-weight: 600;
   box-shadow: 0 2px 8px rgba(0, 87, 255, 0.08);
-}
-
-.side-illustration {
-  position: relative;
-  height: 180px;
-  margin-top: auto;
-  border-radius: 4px;
-  background:
-    linear-gradient(140deg, rgba(0, 87, 255, 0.16), rgba(255, 255, 255, 0.72)),
-    #ffffff;
-  overflow: hidden;
-}
-
-.side-illustration::before {
-  content: "";
-  position: absolute;
-  right: -54px;
-  bottom: -48px;
-  width: 170px;
-  height: 170px;
-  border: 28px solid rgba(0, 87, 255, 0.12);
-  border-radius: 50%;
-}
-
-.avatar-medal {
-  position: absolute;
-  top: 32px;
-  left: 50%;
-  display: grid;
-  place-items: center;
-  width: 72px;
-  height: 72px;
-  border: 8px solid rgba(255, 255, 255, 0.9);
-  border-radius: 50%;
-  background: var(--blue-6);
-  color: #ffffff;
-  transform: translateX(-50%);
-}
-
-.avatar-medal svg {
-  width: 36px;
-  height: 36px;
-}
-
-.side-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--blue-3);
-}
-
-.side-stats div {
-  display: grid;
-  gap: 2px;
-}
-
-.side-stats span {
-  color: var(--grey-8);
-  font-size: 12px;
-  line-height: 20px;
-}
-
-.side-stats strong {
-  color: var(--grey-10);
-  font-size: 20px;
-  line-height: 28px;
 }
 
 .content {
@@ -624,7 +587,7 @@ select:focus {
   padding: 12px;
 }
 
-.task-list button,
+.task-item,
 .download-job {
   display: flex;
   align-items: center;
@@ -639,7 +602,21 @@ select:focus {
   text-align: left;
 }
 
-.task-list button:hover {
+.task-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.task-item:hover {
   border-color: var(--blue-4);
   box-shadow: 0 4px 12px rgba(0, 87, 255, 0.08);
 }
@@ -658,6 +635,31 @@ select:focus {
   margin-top: 3px;
   color: var(--grey-7);
   font-size: 12px;
+}
+
+.history-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border: 1px solid #ffbfbf;
+  border-radius: 4px;
+  background: var(--red-1);
+  color: var(--red-5);
+}
+
+.history-delete:hover {
+  border-color: var(--red-5);
+  background: #ffffff;
+}
+
+.job-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .log-card pre {
@@ -871,10 +873,6 @@ td small {
   .side-nav {
     position: static;
     min-height: auto;
-  }
-
-  .side-illustration {
-    display: none;
   }
 
   .guide-steps {
