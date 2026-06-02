@@ -6,6 +6,7 @@ import {
   Bell,
   ChevronDown,
   CircleGauge,
+  Copy,
   Cpu,
   Database,
   Download,
@@ -14,6 +15,7 @@ import {
   PackageCheck,
   Play,
   Plus,
+  Power,
   RefreshCw,
   Search,
   Settings,
@@ -43,6 +45,7 @@ const fineTunedModels = ref([]);
 const knowledgeSources = ref([]);
 const promptAssets = ref([]);
 const agentWorkflows = ref([]);
+const agentServices = ref([]);
 const selectedJobId = ref("");
 const logContent = ref("");
 const toastText = ref("");
@@ -127,7 +130,7 @@ const promptFile = ref(null);
 const datasetFileName = computed(() => datasetFile.value?.name || "选择 JSON / JSONL 文件");
 const ragFileName = computed(() => ragFile.value?.name || "选择 TXT / MD / JSON / CSV 文件");
 const knowledgeFileName = computed(() => knowledgeFile.value?.name || "选择知识源文件");
-const promptFileName = computed(() => promptFile.value?.name || "可选：上传提示词文件");
+const promptFileName = computed(() => promptFile.value?.name || "可选：上传 .txt 提示词文件");
 const readyBaseModels = computed(() => baseModels.value.filter((model) => model.status === "ready"));
 const selectedJob = computed(() => trainingJobs.value.find((job) => job.id === selectedJobId.value));
 const latestDownloadJobs = computed(() => downloadJobs.value.slice(0, 4));
@@ -139,6 +142,16 @@ const filteredKnowledgeSources = computed(() => filterResources(knowledgeSources
 const filteredPromptAssets = computed(() => filterResources(promptAssets.value));
 const selectedWorkflowNode = computed(() => workflowForm.nodes.find((node) => node.id === selectedWorkflowNodeId.value));
 const managedAgent = computed(() => agentWorkflows.value.find((agent) => agent.id === managedAgentId.value));
+const runningAgentServices = computed(() => agentServices.value.filter((service) => service.status === "running"));
+const agentServiceMap = computed(() => {
+  const map = new Map();
+  runningAgentServices.value.forEach((service) => {
+    if (!map.has(service.agent_id)) {
+      map.set(service.agent_id, service);
+    }
+  });
+  return map;
+});
 const allFilteredKnowledgeSelected = computed(
   () => filteredKnowledgeSources.value.length > 0 && filteredKnowledgeSources.value.every((item) => selectedKnowledgeIds.value.includes(item.id)),
 );
@@ -209,6 +222,7 @@ async function refreshAll() {
     loadKnowledgeSources(),
     loadPromptAssets(),
     loadAgentWorkflows(),
+    loadAgentServices(),
   ]);
 }
 
@@ -262,6 +276,15 @@ async function loadAgentWorkflows() {
   }
 }
 
+async function loadAgentServices() {
+  const payload = await fetchJSON("/api/agent-services");
+  agentServices.value = payload.items || [];
+}
+
+async function refreshAgentManagement() {
+  await Promise.all([loadAgentWorkflows(), loadAgentServices()]);
+}
+
 async function submitDownload() {
   const payload = {
     display_name: downloadForm.display_name,
@@ -304,8 +327,32 @@ function onKnowledgeFileChange(event) {
   knowledgeFile.value = event.target.files?.[0] || null;
 }
 
-function onPromptFileChange(event) {
-  promptFile.value = event.target.files?.[0] || null;
+async function onPromptFileChange(event) {
+  const file = event.target.files?.[0] || null;
+  if (!file) {
+    promptFile.value = null;
+    return;
+  }
+
+  if (!file.name.toLowerCase().endsWith(".txt")) {
+    promptFile.value = null;
+    event.target.value = "";
+    showToast("提示词模板文件仅支持 .txt");
+    return;
+  }
+
+  try {
+    promptForm.content = await file.text();
+    promptFile.value = file;
+    if (!promptForm.name.trim()) {
+      promptForm.name = file.name.replace(/\.[^.]+$/, "");
+    }
+    showToast("已读取提示词文件内容");
+  } catch {
+    promptFile.value = null;
+    event.target.value = "";
+    showToast("提示词文件读取失败");
+  }
 }
 
 function filterResources(items) {
@@ -339,6 +386,7 @@ function createWorkflowNode(type) {
     output: { output_key: "output" },
     llm: {
       model_id: readyBaseModels.value[0]?.id || "",
+      prompt_asset_id: "",
       prompt: "",
       filter_thinking: true,
       max_new_tokens: 512,
@@ -348,6 +396,7 @@ function createWorkflowNode(type) {
     finetuned: {
       fine_tuned_model_id: trainableFineTunedModels.value[0]?.id || "",
       model_id: readyBaseModels.value[0]?.id || "",
+      prompt_asset_id: "",
       prompt: "",
       filter_thinking: true,
       max_new_tokens: 512,
@@ -428,6 +477,19 @@ function workflowNodeSummary(node) {
     return base ? `基座：${base.display_name}` : "选择模型";
   }
   return "-";
+}
+
+function applyPromptTemplateToNode(node, promptAssetId) {
+  if (!node?.config) return;
+  node.config.prompt_asset_id = promptAssetId;
+  const asset = promptAssets.value.find((item) => item.id === promptAssetId);
+  if (asset) {
+    node.config.prompt = asset.content || "";
+  }
+}
+
+function agentServiceFor(agent) {
+  return agentServiceMap.value.get(agent.id);
 }
 
 async function submitTraining() {
@@ -526,17 +588,14 @@ async function submitKnowledgeSource() {
 }
 
 async function submitPromptAsset() {
-  if (!promptFile.value && !promptForm.content.trim()) {
-    showToast("请填写提示词内容或上传提示词文件");
+  if (!promptForm.content.trim()) {
+    showToast("请填写提示词内容或上传 .txt 提示词文件");
     return;
   }
   const form = new FormData();
   Object.entries(promptForm).forEach(([key, value]) => {
     form.append(key, value);
   });
-  if (promptFile.value) {
-    form.append("prompt_file", promptFile.value);
-  }
 
   await fetchJSON("/api/resources/prompts", {
     method: "POST",
@@ -716,6 +775,51 @@ async function runManagedAgent(agent = managedAgent.value) {
   }
 }
 
+async function startAgentService(agent) {
+  const payload = await fetchJSON(`/api/agents/${agent.id}/service`, { method: "POST" });
+  showToast("智能体服务已开启");
+  await loadAgentServices();
+  return payload.service;
+}
+
+async function stopAgentService(service) {
+  if (!service) return;
+  await fetchJSON(`/api/agent-services/${service.id}`, { method: "DELETE" });
+  showToast("智能体服务已停止");
+  await loadAgentServices();
+}
+
+async function toggleAgentService(agent, event) {
+  const checked = event.target.checked;
+  const service = agentServiceFor(agent);
+  try {
+    if (checked) {
+      await startAgentService(agent);
+    } else {
+      await stopAgentService(service);
+    }
+  } catch (error) {
+    event.target.checked = Boolean(service);
+    showToast(error.message);
+  }
+}
+
+async function copyServiceUrl(service) {
+  if (!service?.url) return;
+  try {
+    await navigator.clipboard.writeText(service.url);
+    showToast("服务 URL 已复制");
+  } catch {
+    const input = document.createElement("textarea");
+    input.value = service.url;
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand("copy");
+    document.body.removeChild(input);
+    showToast("服务 URL 已复制");
+  }
+}
+
 async function deleteAgentWorkflow(agent) {
   if (!window.confirm(`删除智能体 ${agent.name}？`)) return;
   await fetchJSON(`/api/agents/${agent.id}`, { method: "DELETE" });
@@ -724,7 +828,7 @@ async function deleteAgentWorkflow(agent) {
     managedAgentTestResult.value = null;
   }
   showToast("智能体已删除");
-  await loadAgentWorkflows();
+  await Promise.all([loadAgentWorkflows(), loadAgentServices()]);
 }
 
 function statusText(status) {
@@ -1267,6 +1371,18 @@ onUnmounted(() => {
                     </select>
                   </label>
                   <label>
+                    <span>提示词模板</span>
+                    <select
+                      :value="selectedWorkflowNode.config.prompt_asset_id || ''"
+                      @change="applyPromptTemplateToNode(selectedWorkflowNode, $event.target.value)"
+                    >
+                      <option value="">手动输入 / 不使用模板</option>
+                      <option v-for="item in promptAssets" :key="item.id" :value="item.id">
+                        {{ item.name }} · {{ item.type_label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label>
                     <span>提示词</span>
                     <textarea v-model="selectedWorkflowNode.config.prompt" placeholder="请输入该节点的大模型提示词"></textarea>
                   </label>
@@ -1306,6 +1422,18 @@ onUnmounted(() => {
                       <option value="">请选择基座模型</option>
                       <option v-for="model in readyBaseModels" :key="model.id" :value="model.id">
                         {{ model.display_name }}
+                      </option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>提示词模板</span>
+                    <select
+                      :value="selectedWorkflowNode.config.prompt_asset_id || ''"
+                      @change="applyPromptTemplateToNode(selectedWorkflowNode, $event.target.value)"
+                    >
+                      <option value="">手动输入 / 不使用模板</option>
+                      <option v-for="item in promptAssets" :key="item.id" :value="item.id">
+                        {{ item.name }} · {{ item.type_label }}
                       </option>
                     </select>
                   </label>
@@ -1455,7 +1583,7 @@ onUnmounted(() => {
                   <input v-model="promptForm.description" placeholder="默认回答约束" />
                 </label>
                 <label class="upload-field">
-                  <input id="prompt-file" type="file" accept=".txt,.md,.json" @change="onPromptFileChange" />
+                  <input id="prompt-file" type="file" accept=".txt" @change="onPromptFileChange" />
                   <FileUp />
                   <span>{{ promptFileName }}</span>
                 </label>
@@ -1594,7 +1722,7 @@ onUnmounted(() => {
             <section class="panel-card">
               <div class="panel-title">
                 <h2>智能体列表</h2>
-                <button class="secondary-button" type="button" @click="loadAgentWorkflows"><RefreshCw />刷新</button>
+                <button class="secondary-button" type="button" @click="refreshAgentManagement"><RefreshCw />刷新</button>
               </div>
               <div class="table-wrap">
                 <table>
@@ -1603,13 +1731,14 @@ onUnmounted(() => {
                       <th>智能体名称</th>
                       <th>节点数</th>
                       <th>状态</th>
+                      <th>接口服务</th>
                       <th>更新时间</th>
                       <th class="action-col">操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr v-if="!agentWorkflows.length">
-                      <td colspan="5" class="empty">暂无智能体</td>
+                      <td colspan="6" class="empty">暂无智能体</td>
                     </tr>
                     <tr v-for="agent in agentWorkflows" :key="agent.id" :class="{ selected: managedAgentId === agent.id }">
                       <td>
@@ -1618,6 +1747,13 @@ onUnmounted(() => {
                       </td>
                       <td>{{ agent.node_count || agent.nodes?.length || 0 }}</td>
                       <td><span class="tag success">{{ statusText(agent.status) }}</span></td>
+                      <td>
+                        <label class="switch-line">
+                          <input type="checkbox" :checked="Boolean(agentServiceFor(agent))" @change="toggleAgentService(agent, $event)" />
+                          <span>{{ agentServiceFor(agent) ? "运行中" : "未开启" }}</span>
+                        </label>
+                        <small v-if="agentServiceFor(agent)" class="service-url">{{ agentServiceFor(agent).url }}</small>
+                      </td>
                       <td>{{ formatDate(agent.updated_at) }}</td>
                       <td class="action-col agent-action-col">
                         <button class="text-button" type="button" @click="loadAgentToBuilder(agent)">编辑</button>
@@ -1652,6 +1788,53 @@ onUnmounted(() => {
                     <small>{{ item.output }}</small>
                   </div>
                 </div>
+              </div>
+            </section>
+
+            <section class="panel-card service-management-panel">
+              <div class="panel-title">
+                <h2>服务管理</h2>
+                <button class="secondary-button" type="button" @click="loadAgentServices"><RefreshCw />刷新</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>服务智能体</th>
+                      <th>服务 URL</th>
+                      <th>调用次数</th>
+                      <th>最近调用</th>
+                      <th class="action-col">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="!runningAgentServices.length">
+                      <td colspan="5" class="empty">暂无运行中的智能体服务</td>
+                    </tr>
+                    <tr v-for="service in runningAgentServices" :key="service.id">
+                      <td>
+                        <strong>{{ service.agent_name }}</strong>
+                        <small>{{ service.agent_description || `${service.node_count || 0} 个节点` }}</small>
+                      </td>
+                      <td>
+                        <code class="service-url">{{ service.url }}</code>
+                        <small>POST JSON: {"input_text": "用户问题"}</small>
+                      </td>
+                      <td>{{ service.invoke_count || 0 }}</td>
+                      <td>{{ service.last_invoked_at ? formatDate(service.last_invoked_at) : "-" }}</td>
+                      <td class="action-col agent-action-col">
+                        <button class="text-button" type="button" @click="copyServiceUrl(service)">
+                          <Copy />
+                          <span>复制</span>
+                        </button>
+                        <button class="text-button danger-text" type="button" @click="stopAgentService(service)">
+                          <Power />
+                          <span>停止</span>
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </section>
           </div>

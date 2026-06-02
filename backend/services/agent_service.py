@@ -181,7 +181,7 @@ class AgentService:
     ) -> tuple[str, list[dict]]:
         if node_type == "finetuned" and model.get("model_type") == "rag":
             rag_payload = self.rag_service.build_prompt(model["id"], current, int(config.get("top_k") or 4))
-            extra_prompt = config.get("prompt", "").strip()
+            extra_prompt = self._resolve_node_prompt(config)
             context_prompt = (
                 self._build_model_prompt(extra_prompt, contexts, current, original_input)
                 if contexts or extra_prompt or original_input != current
@@ -192,7 +192,19 @@ class AgentService:
                 prompt = f"{context_prompt}\n\nRAG封装提示：\n{prompt}"
             return prompt, rag_payload.get("contexts", [])
 
-        return self._build_model_prompt(config.get("prompt", ""), contexts, current, original_input), []
+        return self._build_model_prompt(self._resolve_node_prompt(config), contexts, current, original_input), []
+
+    def _resolve_node_prompt(self, config: dict) -> str:
+        prompt = str(config.get("prompt") or "").strip()
+        if prompt:
+            return prompt
+        prompt_asset_id = str(config.get("prompt_asset_id") or "").strip()
+        if not prompt_asset_id:
+            return ""
+        asset = self.registry.get("prompt_assets", prompt_asset_id)
+        if not asset:
+            return ""
+        return str(asset.get("content") or "").strip()
 
     def _build_model_prompt(self, prompt: str, contexts: list[dict[str, str]], current: str, original_input: str) -> str:
         context_text = "\n\n".join(f"[{item['name']}]\n{item['content']}" for item in contexts)
@@ -218,6 +230,8 @@ class AgentService:
 
         if not base_model:
             raise ValueError("微调模型关联的基座模型不存在。")
+        if model.get("id") == base_model.get("id") and model.get("path") == base_model.get("path"):
+            return self.model_runtime.generate_base(base_model, prompt, options)
         return self.model_runtime.generate_fine_tuned(base_model, model, prompt, options)
 
     def _read_knowledge_source(self, source: dict) -> str:

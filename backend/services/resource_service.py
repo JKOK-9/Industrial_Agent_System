@@ -26,7 +26,7 @@ KNOWLEDGE_SUFFIXES = {
     "json": {".json", ".jsonl"},
     "table": {".csv", ".tsv"},
 }
-PROMPT_SUFFIXES = {".txt", ".md", ".json"}
+PROMPT_SUFFIXES = {".txt"}
 
 
 class ResourceService:
@@ -87,7 +87,7 @@ class ResourceService:
             if upload and upload.filename:
                 suffix = Path(upload.filename).suffix.lower()
                 if suffix not in PROMPT_SUFFIXES:
-                    raise ValueError("提示词文件仅支持 .txt、.md、.json。")
+                    raise ValueError("提示词文件仅支持 .txt。")
                 stored_name = f"{safe_name(Path(upload.filename).stem)}{suffix}"
                 stored_path = prompt_dir / stored_name
                 self._save_upload(upload, stored_path)
@@ -192,7 +192,7 @@ class ResourceService:
         return _preview("\n".join(preview_rows)), {"rows": row_count}
 
     def _read_prompt_content(self, path: Path, suffix: str) -> str:
-        if suffix in {".txt", ".md"}:
+        if suffix == ".txt":
             return path.read_text(encoding="utf-8", errors="replace")
         payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
         if isinstance(payload, dict):

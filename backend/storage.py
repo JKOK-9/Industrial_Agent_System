@@ -18,6 +18,7 @@ DEFAULT_REGISTRY = {
     "knowledge_sources": [],
     "prompt_assets": [],
     "agent_workflows": [],
+    "agent_services": [],
 }
 
 

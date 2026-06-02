@@ -17,6 +17,7 @@ from .schemas import (
     TrainingRequest,
 )
 from .services.dataset_service import DatasetValidationError
+from .services.agent_api_service import AgentApiService
 from .services.agent_service import AgentService
 from .services.model_service import ModelService
 from .services.model_runtime import ModelRuntime
@@ -33,6 +34,7 @@ rag_service = RagService(registry)
 resource_service = ResourceService(registry)
 model_runtime = ModelRuntime()
 agent_service = AgentService(registry, model_runtime, rag_service)
+agent_api_service = AgentApiService(registry, agent_service)
 
 
 def create_app() -> Flask:
@@ -167,9 +169,48 @@ def create_app() -> Flask:
 
     @app.delete("/api/agents/<agent_id>")
     def delete_agent(agent_id: str):
+        agent_api_service.stop_services_for_agent(agent_id)
         if not agent_service.delete_agent(agent_id):
             return jsonify({"detail": "智能体不存在。"}), 404
         return jsonify({"ok": True})
+
+    @app.get("/api/agent-services")
+    def list_agent_services():
+        return jsonify({"items": agent_api_service.list_services()})
+
+    @app.post("/api/agents/<agent_id>/service")
+    def start_agent_service(agent_id: str):
+        service = agent_api_service.start_service(agent_id, request.url_root)
+        return jsonify({"service": service}), 201
+
+    @app.delete("/api/agent-services/<service_id>")
+    def stop_agent_service(service_id: str):
+        service = agent_api_service.stop_service(service_id)
+        if not service:
+            return jsonify({"detail": "智能体服务不存在。"}), 404
+        return jsonify({"service": service})
+
+    @app.post("/api/agent-services/<service_id>/stop")
+    def stop_agent_service_post(service_id: str):
+        service = agent_api_service.stop_service(service_id)
+        if not service:
+            return jsonify({"detail": "智能体服务不存在。"}), 404
+        return jsonify({"service": service})
+
+    @app.post("/api/agent-services/<service_id>/invoke")
+    def invoke_agent_service(service_id: str):
+        payload = request.get_json(silent=True) or {}
+        input_text = (
+            payload.get("input_text")
+            or payload.get("question")
+            or payload.get("input")
+            or payload.get("message")
+            or ""
+        )
+        include_trace = payload.get("include_trace", True)
+        if isinstance(include_trace, str):
+            include_trace = include_trace.lower() not in {"false", "0", "no"}
+        return jsonify(agent_api_service.invoke(service_id, str(input_text), bool(include_trace)))
 
     @app.post("/api/agents/<agent_id>/run")
     def run_agent(agent_id: str):

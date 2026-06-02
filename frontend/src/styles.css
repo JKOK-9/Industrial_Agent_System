@@ -752,6 +752,10 @@ h2 {
   grid-template-columns: minmax(0, 13fr) minmax(340px, 7fr);
 }
 
+.service-management-panel {
+  grid-column: 1 / -1;
+}
+
 .node-palette,
 .node-config-form,
 .agent-test-panel {
@@ -820,6 +824,66 @@ h2 {
   color: var(--grey-8);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.switch-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  color: var(--grey-9);
+}
+
+.switch-line input {
+  width: 34px;
+  height: 18px;
+  margin: 0;
+  appearance: none;
+  border: 1px solid var(--grey-4);
+  border-radius: 999px;
+  background: var(--grey-3);
+  cursor: pointer;
+  position: relative;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.switch-line input::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+  transition: transform 0.18s ease;
+}
+
+.switch-line input:checked {
+  border-color: var(--blue-6);
+  background: var(--blue-6);
+}
+
+.switch-line input:checked::after {
+  transform: translateX(16px);
+}
+
+.service-url {
+  display: block;
+  max-width: 420px;
+  color: var(--grey-8);
+  overflow-wrap: anywhere;
+}
+
+code.service-url {
+  max-width: 680px;
+  border-radius: 4px;
+  padding: 3px 6px;
+  background: var(--grey-1);
+  color: var(--grey-10);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
 }
 
 tr.selected td {

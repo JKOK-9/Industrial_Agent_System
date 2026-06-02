@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import gc
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,36 +28,59 @@ class ModelSession:
         self.model = model
         self.torch = torch_module
         self._lock = threading.Lock()
+        self._disposed = False
 
     def generate(self, prompt: str, options: GenerationOptions | None = None) -> str:
         options = options or GenerationOptions()
-        tokenizer = self.tokenizer
-        model = self.model
-        torch = self.torch
-
-        rendered_prompt = self._render_prompt(prompt)
-        inputs = tokenizer(rendered_prompt, return_tensors="pt")
-        device = next(model.parameters()).device
-        inputs = {key: value.to(device) for key, value in inputs.items()}
-
-        generation_kwargs = {
-            "max_new_tokens": options.max_new_tokens,
-            "do_sample": options.temperature > 0,
-            "top_p": options.top_p,
-            "repetition_penalty": options.repetition_penalty,
-            "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
-            "eos_token_id": tokenizer.eos_token_id,
-        }
-        if options.temperature > 0:
-            generation_kwargs["temperature"] = options.temperature
-
         with self._lock:
+            if self._disposed or self.model is None or self.tokenizer is None:
+                raise RuntimeError("模型会话已卸载，请重新发起调用以加载模型。")
+
+            tokenizer = self.tokenizer
+            model = self.model
+            torch = self.torch
+
+            rendered_prompt = self._render_prompt(prompt)
+            inputs = tokenizer(rendered_prompt, return_tensors="pt")
+            device = next(model.parameters()).device
+            inputs = {key: value.to(device) for key, value in inputs.items()}
+
+            generation_kwargs = {
+                "max_new_tokens": options.max_new_tokens,
+                "do_sample": options.temperature > 0,
+                "top_p": options.top_p,
+                "repetition_penalty": options.repetition_penalty,
+                "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+                "eos_token_id": tokenizer.eos_token_id,
+            }
+            if options.temperature > 0:
+                generation_kwargs["temperature"] = options.temperature
+
             with torch.inference_mode():
                 output_ids = model.generate(**inputs, **generation_kwargs)
 
-        prompt_length = inputs["input_ids"].shape[-1]
-        generated_ids = output_ids[0][prompt_length:]
-        return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+            prompt_length = inputs["input_ids"].shape[-1]
+            generated_ids = output_ids[0][prompt_length:]
+            return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+    def dispose(self) -> None:
+        with self._lock:
+            if self._disposed:
+                return
+            torch = self.torch
+            model = self.model
+            tokenizer = self.tokenizer
+            self.model = None
+            self.tokenizer = None
+            self._disposed = True
+
+        del model
+        del tokenizer
+        gc.collect()
+        if getattr(torch, "cuda", None) and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if hasattr(torch.cuda, "ipc_collect"):
+                torch.cuda.ipc_collect()
 
     def _render_prompt(self, prompt: str) -> str:
         if os.getenv("MODEL_RUNTIME_DISABLE_CHAT_TEMPLATE", "").lower() in {"1", "true", "yes"}:
@@ -79,23 +103,47 @@ class ModelRuntime:
         self._lock = threading.RLock()
 
     def generate_base(self, base_model: dict, prompt: str, options: GenerationOptions | None = None) -> str:
-        runtime_key = self._base_runtime_key(base_model)
+        runtime_key = self.runtime_key_for_base(base_model)
         session = self._get_or_load(runtime_key=runtime_key, model_path=base_model.get("path", ""))
         return session.generate(prompt, options)
 
     def generate_fine_tuned(self, base_model: dict, fine_tuned_model: dict, prompt: str, options: GenerationOptions | None = None) -> str:
         adapter_path = Path(fine_tuned_model.get("path", "")).resolve()
         if (adapter_path / "adapter_config.json").is_file():
-            runtime_key = self._adapter_runtime_key(base_model, fine_tuned_model)
+            runtime_key = self.runtime_key_for_fine_tuned(base_model, fine_tuned_model)
             session = self._get_or_load(runtime_key=runtime_key, model_path=base_model.get("path", ""), adapter_path=str(adapter_path))
         else:
-            runtime_key = self._full_model_runtime_key(fine_tuned_model)
+            runtime_key = self.runtime_key_for_fine_tuned(base_model, fine_tuned_model)
             session = self._get_or_load(runtime_key=runtime_key, model_path=str(adapter_path))
         return session.generate(prompt, options)
 
     def loaded_models(self) -> list[str]:
         with self._lock:
             return sorted(self._sessions)
+
+    def runtime_key_for_base(self, base_model: dict) -> str:
+        return self._base_runtime_key(base_model)
+
+    def runtime_key_for_fine_tuned(self, base_model: dict, fine_tuned_model: dict) -> str:
+        adapter_path = Path(fine_tuned_model.get("path", "")).resolve()
+        if (adapter_path / "adapter_config.json").is_file():
+            return self._adapter_runtime_key(base_model, fine_tuned_model)
+        return self._full_model_runtime_key(fine_tuned_model)
+
+    def unload_many(self, runtime_keys: set[str] | list[str] | tuple[str, ...]) -> list[str]:
+        unloaded: list[str] = []
+        for runtime_key in sorted(set(runtime_keys)):
+            if self.unload(runtime_key):
+                unloaded.append(runtime_key)
+        return unloaded
+
+    def unload(self, runtime_key: str) -> bool:
+        with self._lock:
+            session = self._sessions.pop(runtime_key, None)
+        if not session:
+            return False
+        session.dispose()
+        return True
 
     def _get_or_load(self, runtime_key: str, model_path: str, adapter_path: str | None = None) -> ModelSession:
         with self._lock:
