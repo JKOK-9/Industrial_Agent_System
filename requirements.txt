@@ -12,3 +12,6 @@ accelerate>=0.33
 peft>=0.12
 safetensors>=0.4
 sentencepiece>=0.2
+httpx>=0.28
+pandas>=2.2
+openpyxl>=3.1

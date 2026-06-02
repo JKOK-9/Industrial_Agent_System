@@ -33,6 +33,10 @@ const pages = {
   workflow: { title: "智能体工作流构建", tab: "工作流", subtitle: "按顺序添加节点，构建从输入到输出的智能体链路" },
   resources: { title: "资源库管理", tab: "资源资产", subtitle: "管理智能体可复用的知识源与提示词" },
   agentManage: { title: "智能体管理", tab: "智能体", subtitle: "管理已保存的智能体并测试运行效果" },
+  graphCreate: { title: "新建知识库", tab: "知识图谱", subtitle: "从文档、表格、图片中抽取实体关系，构建多层次知识图谱" },
+  graphFusion: { title: "图谱融合构建", tab: "知识图谱", subtitle: "从已有知识图谱中进行实体对齐、关系归并和溯源融合" },
+  graphDatabase: { title: "数据库导出构建", tab: "知识图谱", subtitle: "从业务数据库抽取主题数据并映射生成新的知识图谱" },
+  graphVersions: { title: "知识图谱版本管理", tab: "知识图谱", subtitle: "按知识库查看图谱版本，并展示节点与关系的可视化链路" },
 };
 
 const currentPage = ref("train");
@@ -54,6 +58,9 @@ const showKnowledgeForm = ref(false);
 const showPromptForm = ref(false);
 const selectedKnowledgeIds = ref([]);
 const selectedPromptIds = ref([]);
+const selectedFusionGraphIds = ref(["kg-equip-compressor", "kg-process-compressor"]);
+const activeFusionLibraryId = ref("kg-equip");
+const fusionSearch = ref("");
 const selectedWorkflowNodeId = ref("input-node");
 const workflowTestInput = ref("");
 const workflowTestResult = ref(null);
@@ -62,6 +69,13 @@ const managedAgentId = ref("");
 const managedAgentTestInput = ref("");
 const managedAgentTestResult = ref(null);
 const managedAgentRunning = ref(false);
+const createSourceFiles = ref([]);
+const createImageFiles = ref([]);
+const graphAnalysisTaskId = ref("");
+const graphAnalysisTasks = ref([]);
+const selectedGraphLibraryId = ref("kg-equip");
+const selectedGraphVersionId = ref("v3");
+const graphBuilderLoaded = ref(false);
 let toastTimer = 0;
 let pollTimer = 0;
 
@@ -114,6 +128,424 @@ const promptForm = reactive({
   content: "",
 });
 
+const graphCreateForm = reactive({
+  name: "压缩机售后知识图谱",
+  businessDomain: "工业设备运维",
+  layerStrategy: "文档层 + 实体层 + 关系层",
+  description: "覆盖设备结构、故障现象、备件编码和工艺步骤的统一图谱。",
+});
+
+const graphRawHeaders = ref([
+  { id: "header-1", name: "设备名称", sample: "压缩机1号", role: "主实体列", description: "每行对应一台设备对象" },
+  { id: "header-2", name: "设备编码", sample: "COMP-001", role: "标识列", description: "可作为实体唯一标识" },
+  { id: "header-3", name: "故障现象", sample: "高温告警", role: "事件列", description: "描述设备故障或异常现象" },
+  { id: "header-4", name: "故障原因", sample: "润滑不足", role: "原因列", description: "可映射为导致故障的原因节点" },
+  { id: "header-5", name: "处理措施", sample: "检查油路", role: "动作列", description: "可映射为处置动作节点" },
+  { id: "header-6", name: "责任班组", sample: "维保二班", role: "组织列", description: "可映射为组织或责任主体" },
+  { id: "header-7", name: "备件编码", sample: "6208-ZZ", role: "物料列", description: "可映射为备件或物料节点" },
+  { id: "header-8", name: "安装位置", sample: "一车间", role: "位置列", description: "可映射为位置节点" },
+]);
+
+const graphSampleRows = ref([
+  {
+    "设备名称": "压缩机1号",
+    "设备编码": "COMP-001",
+    "故障现象": "高温告警",
+    "故障原因": "润滑不足",
+    "处理措施": "检查油路",
+    "责任班组": "维保二班",
+    "备件编码": "6208-ZZ",
+    "安装位置": "一车间",
+  },
+  {
+    "设备名称": "压缩机2号",
+    "设备编码": "COMP-002",
+    "故障现象": "异响",
+    "故障原因": "轴承磨损",
+    "处理措施": "更换主轴轴承",
+    "责任班组": "维保一班",
+    "备件编码": "BR-6208-A",
+    "安装位置": "二车间",
+  },
+]);
+
+const graphModelNodeSuggestions = ref([
+  { id: "node-s-1", header: "设备名称", node_type: "设备", confidence: "高", reason: "字段值稳定，语义明确指向设备实体" },
+  { id: "node-s-2", header: "故障现象", node_type: "故障", confidence: "高", reason: "字段内容为异常事件或故障表现" },
+  { id: "node-s-3", header: "故障原因", node_type: "故障", confidence: "中", reason: "字段内容更适合作为原因类故障节点" },
+  { id: "node-s-4", header: "处理措施", node_type: "工艺步骤", confidence: "中", reason: "字段描述操作动作，适合映射为处置步骤" },
+  { id: "node-s-5", header: "责任班组", node_type: "组织", confidence: "高", reason: "字段值体现责任主体与组织对象" },
+  { id: "node-s-6", header: "备件编码", node_type: "备件", confidence: "高", reason: "字段值为备件或物料编码" },
+  { id: "node-s-7", header: "安装位置", node_type: "位置", confidence: "高", reason: "字段值可映射为位置类节点" },
+]);
+
+const graphModelRelationSuggestions = ref([
+  { id: "rel-s-1", source_header: "设备名称", relation: "出现", target_header: "故障现象", confidence: "高", reason: "设备与故障现象存在直接挂接关系" },
+  { id: "rel-s-2", source_header: "故障原因", relation: "导致", target_header: "故障现象", confidence: "高", reason: "原因字段与现象字段形成因果关系" },
+  { id: "rel-s-3", source_header: "处理措施", relation: "处理", target_header: "故障现象", confidence: "中", reason: "措施字段通常用于处置故障现象" },
+  { id: "rel-s-4", source_header: "责任班组", relation: "负责", target_header: "设备名称", confidence: "高", reason: "责任主体与设备对象形成责任关系" },
+  { id: "rel-s-5", source_header: "设备名称", relation: "使用", target_header: "备件编码", confidence: "中", reason: "设备与备件存在关联使用或替换关系" },
+  { id: "rel-s-6", source_header: "设备名称", relation: "位于", target_header: "安装位置", confidence: "高", reason: "设备字段与安装位置字段形成空间关系" },
+]);
+
+const graphHeaderConfirmations = ref([
+  { id: "confirm-1", source_header: "设备名称", source_type: "设备", relation: "出现", target_header: "故障现象", target_type: "故障", status: "待确认" },
+  { id: "confirm-2", source_header: "故障原因", source_type: "故障", relation: "导致", target_header: "故障现象", target_type: "故障", status: "待确认" },
+  { id: "confirm-3", source_header: "处理措施", source_type: "工艺步骤", relation: "处理", target_header: "故障现象", target_type: "故障", status: "待确认" },
+  { id: "confirm-4", source_header: "责任班组", source_type: "组织", relation: "负责", target_header: "设备名称", target_type: "设备", status: "待确认" },
+]);
+const graphTriplePreviewItems = ref([]);
+
+const graphNodeTypeForm = reactive({
+  name: "",
+  code: "",
+  description: "",
+});
+
+const graphNodeTypes = ref([
+  { id: "node-equipment", name: "设备", code: "equipment", description: "压缩机、冷却器、油泵等设备对象", count: 42 },
+  { id: "node-part", name: "部件", code: "part", description: "轴承、转子、油路、壳体等组成部件", count: 86 },
+  { id: "node-fault", name: "故障", code: "fault", description: "高温告警、润滑不足、异响等异常现象", count: 28 },
+  { id: "node-process", name: "工艺步骤", code: "process_step", description: "装配、校验、保养、巡检等业务步骤", count: 35 },
+  { id: "node-spare", name: "备件", code: "spare_part", description: "备件编码、替代件和物料对象", count: 19 },
+]);
+
+const graphRelationTypeForm = reactive({
+  name: "",
+  code: "",
+  description: "",
+  direction: "单向",
+});
+
+const graphRelationTypes = ref([
+  { id: "rel-contains", name: "包含", code: "contains", description: "用于表示设备与部件、总成与子件的组成关系", direction: "单向" },
+  { id: "rel-causes", name: "导致", code: "causes", description: "用于表示故障原因和故障现象、事件后果关系", direction: "单向" },
+  { id: "rel-uses", name: "使用", code: "uses", description: "用于表示工艺步骤对工具、备件、文档的使用关系", direction: "单向" },
+  { id: "rel-responsible", name: "负责", code: "responsible_for", description: "用于表示组织或角色对设备、任务的责任关系", direction: "单向" },
+]);
+
+const graphRelationRuleForm = reactive({
+  source_type: "设备",
+  relation: "包含",
+  target_type: "部件",
+  example: "",
+});
+
+const graphTripleForm = reactive({
+  source: "",
+  source_type: "设备",
+  relation: "包含",
+  target: "",
+  target_type: "部件",
+  origin: "手动新增",
+});
+
+const graphRelationRules = ref([
+  { id: "rule-1", source_type: "设备", relation: "包含", target_type: "部件", example: "压缩机 -> 包含 -> 轴承" },
+  { id: "rule-2", source_type: "故障", relation: "导致", target_type: "故障", example: "润滑不足 -> 导致 -> 高温告警" },
+  { id: "rule-3", source_type: "工艺步骤", relation: "使用", target_type: "备件", example: "转子装配 -> 使用 -> 主轴轴承" },
+  { id: "rule-4", source_type: "组织", relation: "负责", target_type: "设备", example: "维保二班 -> 负责 -> 1#压缩机" },
+]);
+
+const graphExtractedTriples = ref([
+  {
+    id: "triple-1",
+    source: "压缩机",
+    source_type: "设备",
+    relation: "包含",
+    target: "轴承",
+    target_type: "部件",
+    origin: "测试数据_3.xlsx",
+    status: "待确认",
+  },
+  {
+    id: "triple-2",
+    source: "润滑不足",
+    source_type: "故障",
+    relation: "导致",
+    target: "高温告警",
+    target_type: "故障",
+    origin: "测试数据_3.xlsx",
+    status: "已确认",
+  },
+  {
+    id: "triple-3",
+    source: "转子装配",
+    source_type: "工艺步骤",
+    relation: "使用",
+    target: "主轴轴承",
+    target_type: "备件",
+    origin: "测试数据_3.xlsx",
+    status: "待确认",
+  },
+]);
+
+const graphFusionForm = reactive({
+  name: "压缩机综合知识图谱",
+  fusionMode: "实体对齐优先",
+  conflictRule: "保留高可信版本并生成溯源链路",
+  description: "融合设备台账图谱、工艺图谱与运维案例图谱。",
+});
+
+const graphDatabaseForm = reactive({
+  name: "设备主数据图谱",
+  databaseType: "PostgreSQL",
+  connectionName: "factory-mes-readonly",
+  schemaName: "public",
+  tableNames: "equipment_master, maintenance_order, spare_parts",
+  syncMode: "按主题导出后构图",
+});
+
+const graphAlignmentPreview = ref([
+  {
+    id: "align-1",
+    left: "设备维护知识库 / 压缩机维护子库 / 压缩机机组",
+    right: "装配工艺知识库 / 压缩机装配子库 / 压缩机总成",
+    confidence: "高",
+    rule: "同义词 + 编码相似度",
+    decision: "自动合并",
+  },
+  {
+    id: "align-2",
+    left: "设备主数据知识库 / 设备台账子库 / 1#压缩机",
+    right: "设备维护知识库 / 压缩机维护子库 / 压缩机1号",
+    confidence: "高",
+    rule: "设备编码一致",
+    decision: "自动合并",
+  },
+  {
+    id: "align-3",
+    left: "装配工艺知识库 / 质检工艺子库 / 力矩校验",
+    right: "设备维护知识库 / 压缩机维护子库 / 螺栓力矩检查",
+    confidence: "中",
+    rule: "语义相似",
+    decision: "待确认",
+  },
+]);
+
+const graphConflictItems = ref([
+  {
+    id: "conflict-1",
+    field: "责任班组",
+    entity: "1#压缩机",
+    left: "总装一班",
+    right: "维保二班",
+    severity: "高",
+    suggestion: "保留高可信版本并记录来源",
+  },
+  {
+    id: "conflict-2",
+    field: "备件编码",
+    entity: "主轴轴承",
+    left: "BR-6208-A",
+    right: "6208-ZZ",
+    severity: "中",
+    suggestion: "人工确认后建立替代件关系",
+  },
+  {
+    id: "conflict-3",
+    field: "工艺步骤名称",
+    entity: "转子校准",
+    left: "动平衡校验",
+    right: "转子平衡检测",
+    severity: "中",
+    suggestion: "并存保留并增加同义关系",
+  },
+]);
+
+
+const graphLibraries = ref([
+  {
+    id: "kg-equip",
+    name: "设备维护知识库",
+    domain: "设备运维",
+    source: "文档 / 表格 / 图片",
+    layers: ["文档层", "实体层", "关系层", "故障事件层"],
+    entity_count: 326,
+    relation_count: 892,
+    updated_at: "2026-05-30T09:30:00+08:00",
+    owner: "知识工程组",
+    children: [
+      {
+        id: "kg-equip-compressor",
+        name: "压缩机维护子库",
+        scene: "压缩机售后与巡检",
+        entity_count: 138,
+        relation_count: 326,
+        updated_at: "2026-05-30T09:30:00+08:00",
+      },
+      {
+        id: "kg-equip-cooling",
+        name: "冷却系统子库",
+        scene: "冷却回路故障处理",
+        entity_count: 92,
+        relation_count: 210,
+        updated_at: "2026-05-28T16:40:00+08:00",
+      },
+      {
+        id: "kg-equip-lube",
+        name: "润滑系统子库",
+        scene: "润滑异常与保养策略",
+        entity_count: 96,
+        relation_count: 244,
+        updated_at: "2026-05-27T11:20:00+08:00",
+      },
+    ],
+    versions: [
+      {
+        id: "v3",
+        label: "V3.2 当前生产版",
+        status: "ready",
+        updated_at: "2026-05-30T09:30:00+08:00",
+        summary: "补充压缩机故障树和典型维修工序，新增 74 个关系边。",
+        metrics: { entities: 326, relations: 892, sources: 18 },
+        nodes: [
+          { id: "n1", label: "压缩机", type: "核心设备" },
+          { id: "n2", label: "高温告警", type: "故障现象" },
+          { id: "n3", label: "润滑不足", type: "原因" },
+          { id: "n4", label: "检查油路", type: "处置动作" },
+        ],
+        edges: [
+          "压缩机 -> 高温告警",
+          "高温告警 -> 润滑不足",
+          "润滑不足 -> 检查油路",
+        ],
+      },
+      {
+        id: "v2",
+        label: "V3.1 上一版本",
+        status: "succeeded",
+        updated_at: "2026-05-18T14:12:00+08:00",
+        summary: "完成备件编码映射，补充 2 个图片识别规则。",
+        metrics: { entities: 298, relations: 818, sources: 15 },
+        nodes: [
+          { id: "n1", label: "压缩机", type: "核心设备" },
+          { id: "n2", label: "轴承", type: "部件" },
+          { id: "n3", label: "备件编码", type: "主数据" },
+        ],
+        edges: [
+          "压缩机 -> 轴承",
+          "轴承 -> 备件编码",
+        ],
+      },
+    ],
+  },
+  {
+    id: "kg-process",
+    name: "装配工艺知识库",
+    domain: "制造工艺",
+    source: "已有知识图谱融合",
+    layers: ["工艺层", "工步层", "质检层"],
+    entity_count: 214,
+    relation_count: 541,
+    updated_at: "2026-05-25T16:05:00+08:00",
+    owner: "工艺信息化组",
+    children: [
+      {
+        id: "kg-process-compressor",
+        name: "压缩机装配子库",
+        scene: "总装、校验与交付工步",
+        entity_count: 104,
+        relation_count: 248,
+        updated_at: "2026-05-25T16:05:00+08:00",
+      },
+      {
+        id: "kg-process-rotor",
+        name: "转子装配子库",
+        scene: "转子、轴承与动平衡工艺",
+        entity_count: 66,
+        relation_count: 171,
+        updated_at: "2026-05-20T09:50:00+08:00",
+      },
+      {
+        id: "kg-process-quality",
+        name: "质检工艺子库",
+        scene: "力矩、间隙和质检卡映射",
+        entity_count: 44,
+        relation_count: 122,
+        updated_at: "2026-05-18T15:30:00+08:00",
+      },
+    ],
+    versions: [
+      {
+        id: "v4",
+        label: "V2.0 当前生产版",
+        status: "ready",
+        updated_at: "2026-05-25T16:05:00+08:00",
+        summary: "将装配工步与质检卡对齐，增加工艺变更溯源节点。",
+        metrics: { entities: 214, relations: 541, sources: 9 },
+        nodes: [
+          { id: "n1", label: "装配工序", type: "工艺节点" },
+          { id: "n2", label: "力矩校验", type: "质检项" },
+          { id: "n3", label: "工步卡", type: "文档" },
+        ],
+        edges: [
+          "装配工序 -> 力矩校验",
+          "工步卡 -> 装配工序",
+        ],
+      },
+    ],
+  },
+  {
+    id: "kg-master",
+    name: "设备主数据知识库",
+    domain: "主数据治理",
+    source: "数据库导出",
+    layers: ["主数据层", "组织层", "运维对象层"],
+    entity_count: 482,
+    relation_count: 1260,
+    updated_at: "2026-05-29T11:10:00+08:00",
+    owner: "数据治理组",
+    children: [
+      {
+        id: "kg-master-equipment",
+        name: "设备台账子库",
+        scene: "设备编码、位置和责任班组",
+        entity_count: 188,
+        relation_count: 486,
+        updated_at: "2026-05-29T11:10:00+08:00",
+      },
+      {
+        id: "kg-master-spare",
+        name: "备件主数据子库",
+        scene: "备件编码、替代件和物料分类",
+        entity_count: 160,
+        relation_count: 404,
+        updated_at: "2026-05-27T10:45:00+08:00",
+      },
+      {
+        id: "kg-master-order",
+        name: "工单主题子库",
+        scene: "维保工单、故障标签与执行记录",
+        entity_count: 134,
+        relation_count: 370,
+        updated_at: "2026-05-24T14:10:00+08:00",
+      },
+    ],
+    versions: [
+      {
+        id: "v5",
+        label: "V1.6 当前生产版",
+        status: "ready",
+        updated_at: "2026-05-29T11:10:00+08:00",
+        summary: "从 MES / EAM 同步设备、位置、责任班组信息并生成主数据图谱。",
+        metrics: { entities: 482, relations: 1260, sources: 6 },
+        nodes: [
+          { id: "n1", label: "设备编码", type: "主键" },
+          { id: "n2", label: "安装位置", type: "位置" },
+          { id: "n3", label: "责任班组", type: "组织" },
+          { id: "n4", label: "保养策略", type: "策略" },
+        ],
+        edges: [
+          "设备编码 -> 安装位置",
+          "设备编码 -> 责任班组",
+          "设备编码 -> 保养策略",
+        ],
+      },
+    ],
+  },
+]);
+
 const workflowForm = reactive({
   name: "",
   description: "",
@@ -137,6 +569,32 @@ const trainableFineTunedModels = computed(() => fineTunedModels.value);
 const latestRagModels = computed(() => ragModels.value.slice(0, 5));
 const filteredKnowledgeSources = computed(() => filterResources(knowledgeSources.value));
 const filteredPromptAssets = computed(() => filterResources(promptAssets.value));
+const graphHeaderOptions = computed(() => graphRawHeaders.value.map((item) => item.name));
+const graphLibraryCount = computed(() => graphLibraries.value.length);
+const graphVersionCount = computed(() => graphLibraries.value.reduce((sum, item) => sum + item.versions.length, 0));
+const graphEntityCount = computed(() => graphLibraries.value.reduce((sum, item) => sum + item.entity_count, 0));
+const graphRelationCount = computed(() => graphLibraries.value.reduce((sum, item) => sum + item.relation_count, 0));
+const activeFusionLibrary = computed(() => graphLibraries.value.find((item) => item.id === activeFusionLibraryId.value) || graphLibraries.value[0]);
+const activeFusionChildren = computed(() => {
+  const keyword = fusionSearch.value.trim().toLowerCase();
+  const items = activeFusionLibrary.value?.children || [];
+  if (!keyword) return items;
+  return items.filter((child) => [child.name, child.scene].some((value) => String(value).toLowerCase().includes(keyword)));
+});
+const fusionSourceGraphs = computed(() =>
+  graphLibraries.value.flatMap((item) =>
+    (item.children || [])
+      .filter((child) => selectedFusionGraphIds.value.includes(child.id))
+      .map((child) => ({ ...child, parent_name: item.name })),
+  ),
+);
+const graphAlignmentPendingCount = computed(() => graphAlignmentPreview.value.filter((item) => item.decision === "待确认").length);
+const graphConflictHighCount = computed(() => graphConflictItems.value.filter((item) => item.severity === "高").length);
+const currentGraphLibrary = computed(() => graphLibraries.value.find((item) => item.id === selectedGraphLibraryId.value) || graphLibraries.value[0]);
+const currentGraphVersion = computed(
+  () => currentGraphLibrary.value?.versions.find((item) => item.id === selectedGraphVersionId.value) || currentGraphLibrary.value?.versions[0],
+);
+const latestGraphLibraries = computed(() => [...graphLibraries.value].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 4));
 const selectedWorkflowNode = computed(() => workflowForm.nodes.find((node) => node.id === selectedWorkflowNodeId.value));
 const managedAgent = computed(() => agentWorkflows.value.find((agent) => agent.id === managedAgentId.value));
 const allFilteredKnowledgeSelected = computed(
@@ -161,17 +619,18 @@ const failedJobs = computed(() => trainingJobs.value.filter((job) => ["failed", 
 
 async function fetchJSON(url, options = {}) {
   const response = await fetch(`${apiBase}${url}`, options);
+  const rawText = await response.text();
   if (!response.ok) {
     let detail = response.statusText;
     try {
-      const payload = await response.json();
+      const payload = rawText ? JSON.parse(rawText) : {};
       detail = formatErrorDetail(payload.detail) || detail;
     } catch {
-      detail = await response.text();
+      detail = rawText || detail;
     }
     throw new Error(detail);
   }
-  return response.json();
+  return rawText ? JSON.parse(rawText) : {};
 }
 
 function formatErrorDetail(detail) {
@@ -196,8 +655,395 @@ function showToast(message) {
   }, 3000);
 }
 
+function isGraphPage(page) {
+  return ["graphCreate", "graphFusion", "graphDatabase", "graphVersions"].includes(page);
+}
+
 function switchPage(page) {
   currentPage.value = page;
+  if (isGraphPage(page) && !graphBuilderLoaded.value) {
+    loadGraphBuilderConfig().catch((error) => showToast(error.message));
+  }
+}
+
+function onCreateSourceFilesChange(event) {
+  createSourceFiles.value = Array.from(event.target.files || []);
+  const firstFile = createSourceFiles.value[0];
+  if (firstFile) {
+    analyzeGraphTable(firstFile).catch((error) => showToast(error.message));
+  }
+}
+
+function onCreateImageFilesChange(event) {
+  createImageFiles.value = Array.from(event.target.files || []);
+}
+
+async function analyzeGraphTable(file) {
+  const form = new FormData();
+  form.append("table_file", file);
+  form.append("knowledge_base_name", graphCreateForm.name);
+  const payload = await fetchJSON("/api/graph-builder/analyze-table", {
+    method: "POST",
+    body: form,
+  });
+  if (Array.isArray(payload.headers) && payload.headers.length) {
+    graphRawHeaders.value = payload.headers;
+  }
+  if (Array.isArray(payload.sample_rows)) {
+    graphSampleRows.value = payload.sample_rows;
+  }
+  if (Array.isArray(payload.node_suggestions)) {
+    graphModelNodeSuggestions.value = payload.node_suggestions;
+  }
+  if (Array.isArray(payload.relation_suggestions)) {
+    graphModelRelationSuggestions.value = payload.relation_suggestions;
+  }
+  if (Array.isArray(payload.confirmation_rules) && payload.confirmation_rules.length) {
+    graphHeaderConfirmations.value = payload.confirmation_rules;
+  }
+  if (payload.task?.id) {
+    graphAnalysisTaskId.value = payload.task.id;
+    await loadGraphAnalysisTasks();
+    await loadGraphTriplePreview(payload.task.id);
+  }
+  showToast(payload.analysis_source === "llm" ? "已完成大模型表头理解与关系建议" : "已完成表头解析与关系建议");
+}
+
+async function loadGraphAnalysisTasks() {
+  const payload = await fetchJSON("/api/graph-builder/analysis-tasks");
+  graphAnalysisTasks.value = payload.items || [];
+}
+
+async function loadGraphTriplePreview(taskId = graphAnalysisTaskId.value) {
+  if (!taskId) {
+    graphTriplePreviewItems.value = [];
+    return;
+  }
+  const payload = await fetchJSON(`/api/graph-builder/analysis-tasks/${taskId}/triples-preview`);
+  graphTriplePreviewItems.value = payload.items || [];
+}
+
+async function loadGraphAnalysisTask(taskId) {
+  const payload = await fetchJSON(`/api/graph-builder/analysis-tasks/${taskId}`);
+  const task = payload.item;
+  graphAnalysisTaskId.value = task.id;
+  graphRawHeaders.value = task.headers || [];
+  graphSampleRows.value = task.sample_rows || [];
+  graphModelNodeSuggestions.value = task.node_suggestions || [];
+  graphModelRelationSuggestions.value = task.relation_suggestions || [];
+  graphHeaderConfirmations.value = task.confirmation_rules || [];
+  await loadGraphTriplePreview(task.id);
+}
+
+async function persistGraphHeaderConfirmations() {
+  if (!graphAnalysisTaskId.value) return;
+  await fetchJSON(`/api/graph-builder/analysis-tasks/${graphAnalysisTaskId.value}/confirmation-rules`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items: graphHeaderConfirmations.value }),
+  });
+  await loadGraphAnalysisTasks();
+  await loadGraphTriplePreview(graphAnalysisTaskId.value);
+}
+
+async function persistGraphBuilderConfig() {
+  await Promise.all([
+    fetchJSON("/api/graph-builder/node-types", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: graphNodeTypes.value }),
+    }),
+    fetchJSON("/api/graph-builder/relation-types", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: graphRelationTypes.value }),
+    }),
+    fetchJSON("/api/graph-builder/relation-rules", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: graphRelationRules.value }),
+    }),
+    fetchJSON("/api/graph-builder/triples", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: graphExtractedTriples.value }),
+    }),
+  ]);
+}
+
+async function loadGraphBuilderConfig() {
+  const [nodeTypesPayload, relationTypesPayload, relationRulesPayload, triplesPayload] = await Promise.all([
+    fetchJSON("/api/graph-builder/node-types"),
+    fetchJSON("/api/graph-builder/relation-types"),
+    fetchJSON("/api/graph-builder/relation-rules"),
+    fetchJSON("/api/graph-builder/triples"),
+  ]);
+
+  const hasSavedConfig =
+    (nodeTypesPayload.items || []).length ||
+    (relationTypesPayload.items || []).length ||
+    (relationRulesPayload.items || []).length ||
+    (triplesPayload.items || []).length;
+
+  if ((nodeTypesPayload.items || []).length) graphNodeTypes.value = nodeTypesPayload.items;
+  if ((relationTypesPayload.items || []).length) graphRelationTypes.value = relationTypesPayload.items;
+  if ((relationRulesPayload.items || []).length) graphRelationRules.value = relationRulesPayload.items;
+  if ((triplesPayload.items || []).length) graphExtractedTriples.value = triplesPayload.items;
+
+  if (!hasSavedConfig) {
+    await persistGraphBuilderConfig();
+  }
+
+  syncGraphBuilderForms();
+  graphBuilderLoaded.value = true;
+}
+
+function syncGraphBuilderForms() {
+  const firstNodeType = graphNodeTypes.value[0]?.name || "";
+  const secondNodeType = graphNodeTypes.value[1]?.name || firstNodeType;
+  const firstRelationType = graphRelationTypes.value[0]?.name || "";
+
+  if (!graphRelationRuleForm.source_type || !graphNodeTypes.value.some((item) => item.name === graphRelationRuleForm.source_type)) {
+    graphRelationRuleForm.source_type = firstNodeType;
+  }
+  if (!graphRelationRuleForm.target_type || !graphNodeTypes.value.some((item) => item.name === graphRelationRuleForm.target_type)) {
+    graphRelationRuleForm.target_type = secondNodeType;
+  }
+  if (!graphRelationRuleForm.relation || !graphRelationTypes.value.some((item) => item.name === graphRelationRuleForm.relation)) {
+    graphRelationRuleForm.relation = firstRelationType;
+  }
+
+  if (!graphTripleForm.source_type || !graphNodeTypes.value.some((item) => item.name === graphTripleForm.source_type)) {
+    graphTripleForm.source_type = firstNodeType;
+  }
+  if (!graphTripleForm.target_type || !graphNodeTypes.value.some((item) => item.name === graphTripleForm.target_type)) {
+    graphTripleForm.target_type = secondNodeType;
+  }
+  if (!graphTripleForm.relation || !graphRelationTypes.value.some((item) => item.name === graphTripleForm.relation)) {
+    graphTripleForm.relation = firstRelationType;
+  }
+}
+
+function submitGraphCreate() {
+  if (!graphCreateForm.name.trim()) {
+    showToast("请填写知识库名称");
+    return;
+  }
+  if (!createSourceFiles.value.length && !createImageFiles.value.length) {
+    showToast("请至少上传文档、表格或图片中的一种来源");
+    return;
+  }
+  showToast("知识图谱构建任务已创建");
+}
+
+async function addGraphHeaderConfirmation() {
+  graphHeaderConfirmations.value.push({
+    id: `confirm-${Date.now()}`,
+    source_header: graphHeaderOptions.value[0] || "",
+    source_type: graphNodeTypes.value[0]?.name || "",
+    relation: graphRelationTypes.value[0]?.name || "",
+    target_header: graphHeaderOptions.value[1] || graphHeaderOptions.value[0] || "",
+    target_type: graphNodeTypes.value[1]?.name || graphNodeTypes.value[0]?.name || "",
+    status: "待确认",
+  });
+  await persistGraphHeaderConfirmations();
+  showToast("已新增一条确认规则");
+}
+
+async function confirmGraphHeaderRule(id) {
+  const item = graphHeaderConfirmations.value.find((rule) => rule.id === id);
+  if (!item) return;
+  item.status = "已确认";
+  await persistGraphHeaderConfirmations();
+  showToast("关系确认已更新");
+}
+
+async function deleteGraphHeaderRule(id) {
+  graphHeaderConfirmations.value = graphHeaderConfirmations.value.filter((rule) => rule.id !== id);
+  await persistGraphHeaderConfirmations();
+  showToast("已删除一条确认规则");
+}
+
+async function addGraphNodeType() {
+  if (!graphNodeTypeForm.name.trim() || !graphNodeTypeForm.code.trim()) {
+    showToast("请填写节点类型名称和编码");
+    return;
+  }
+  graphNodeTypes.value.unshift({
+    id: `node-${Date.now()}`,
+    name: graphNodeTypeForm.name.trim(),
+    code: graphNodeTypeForm.code.trim(),
+    description: graphNodeTypeForm.description.trim() || "手动新增节点类型",
+    count: 0,
+  });
+  Object.assign(graphNodeTypeForm, { name: "", code: "", description: "" });
+  syncGraphBuilderForms();
+  await persistGraphBuilderConfig();
+  showToast("节点类型已新增");
+}
+
+async function deleteGraphNodeType(id) {
+  const node = graphNodeTypes.value.find((item) => item.id === id);
+  graphNodeTypes.value = graphNodeTypes.value.filter((item) => item.id !== id);
+  if (node) {
+    graphRelationRules.value = graphRelationRules.value.filter(
+      (item) => item.source_type !== node.name && item.target_type !== node.name,
+    );
+  }
+  syncGraphBuilderForms();
+  await persistGraphBuilderConfig();
+  showToast("节点类型已删除");
+}
+
+async function addGraphRelationType() {
+  if (!graphRelationTypeForm.name.trim() || !graphRelationTypeForm.code.trim()) {
+    showToast("请填写关系类型名称和编码");
+    return;
+  }
+  graphRelationTypes.value.unshift({
+    id: `rel-${Date.now()}`,
+    name: graphRelationTypeForm.name.trim(),
+    code: graphRelationTypeForm.code.trim(),
+    description: graphRelationTypeForm.description.trim() || "手动新增关系类型",
+    direction: graphRelationTypeForm.direction,
+  });
+  Object.assign(graphRelationTypeForm, { name: "", code: "", description: "", direction: "单向" });
+  syncGraphBuilderForms();
+  await persistGraphBuilderConfig();
+  showToast("关系类型已新增");
+}
+
+async function deleteGraphRelationType(id) {
+  const relation = graphRelationTypes.value.find((item) => item.id === id);
+  graphRelationTypes.value = graphRelationTypes.value.filter((item) => item.id !== id);
+  if (relation) {
+    graphRelationRules.value = graphRelationRules.value.filter((item) => item.relation !== relation.name);
+    const fallbackRelation = graphRelationTypes.value[0]?.name || "";
+    graphExtractedTriples.value = graphExtractedTriples.value.map((item) =>
+      item.relation === relation.name ? { ...item, relation: fallbackRelation, status: "待确认" } : item,
+    );
+  }
+  syncGraphBuilderForms();
+  await persistGraphBuilderConfig();
+  showToast("关系类型已删除");
+}
+
+async function addGraphRelationRule() {
+  if (!graphRelationRuleForm.source_type || !graphRelationRuleForm.relation || !graphRelationRuleForm.target_type) {
+    showToast("请补充关系约束信息");
+    return;
+  }
+  graphRelationRules.value.unshift({
+    id: `rule-${Date.now()}`,
+    source_type: graphRelationRuleForm.source_type,
+    relation: graphRelationRuleForm.relation,
+    target_type: graphRelationRuleForm.target_type,
+    example:
+      graphRelationRuleForm.example.trim() ||
+      `${graphRelationRuleForm.source_type} -> ${graphRelationRuleForm.relation} -> ${graphRelationRuleForm.target_type}`,
+  });
+  Object.assign(graphRelationRuleForm, {
+    source_type: graphNodeTypes.value[0]?.name || "",
+    relation: graphRelationTypes.value[0]?.name || "",
+    target_type: graphNodeTypes.value[1]?.name || graphNodeTypes.value[0]?.name || "",
+    example: "",
+  });
+  syncGraphBuilderForms();
+  await persistGraphBuilderConfig();
+  showToast("关系约束已新增");
+}
+
+async function deleteGraphRelationRule(id) {
+  graphRelationRules.value = graphRelationRules.value.filter((item) => item.id !== id);
+  await persistGraphBuilderConfig();
+  showToast("关系约束已删除");
+}
+
+async function addGraphTriple() {
+  if (!graphTripleForm.source.trim() || !graphTripleForm.target.trim()) {
+    showToast("请填写起点节点和终点节点");
+    return;
+  }
+  graphExtractedTriples.value.unshift({
+    id: `triple-${Date.now()}`,
+    source: graphTripleForm.source.trim(),
+    source_type: graphTripleForm.source_type,
+    relation: graphTripleForm.relation,
+    target: graphTripleForm.target.trim(),
+    target_type: graphTripleForm.target_type,
+    origin: graphTripleForm.origin.trim() || "手动新增",
+    status: "待确认",
+  });
+  Object.assign(graphTripleForm, {
+    source: "",
+    source_type: graphNodeTypes.value[0]?.name || "",
+    relation: graphRelationTypes.value[0]?.name || "",
+    target: "",
+    target_type: graphNodeTypes.value[1]?.name || graphNodeTypes.value[0]?.name || "",
+    origin: "手动新增",
+  });
+  await persistGraphBuilderConfig();
+  showToast("三元组已新增");
+}
+
+async function confirmGraphTriple(id) {
+  const item = graphExtractedTriples.value.find((triple) => triple.id === id);
+  if (!item) return;
+  item.status = "已确认";
+  await persistGraphBuilderConfig();
+  showToast("三元组已确认");
+}
+
+async function ignoreGraphTriple(id) {
+  const item = graphExtractedTriples.value.find((triple) => triple.id === id);
+  if (!item) return;
+  item.status = "已忽略";
+  await persistGraphBuilderConfig();
+  showToast("三元组已忽略");
+}
+
+async function updateGraphTripleRelation(id, relation) {
+  const item = graphExtractedTriples.value.find((triple) => triple.id === id);
+  if (!item) return;
+  item.relation = relation;
+  item.status = "待确认";
+  await persistGraphBuilderConfig();
+  showToast("三元组关系已更新");
+}
+
+function setActiveFusionLibrary(id) {
+  activeFusionLibraryId.value = id;
+}
+
+function toggleFusionGraph(id) {
+  selectedFusionGraphIds.value = selectedFusionGraphIds.value.includes(id)
+    ? selectedFusionGraphIds.value.filter((itemId) => itemId !== id)
+    : [...selectedFusionGraphIds.value, id];
+}
+
+function submitGraphFusion() {
+  if (selectedFusionGraphIds.value.length < 2) {
+    showToast("请至少选择两个已有知识图谱用于融合");
+    return;
+  }
+  showToast("知识图谱融合任务已提交");
+}
+
+function submitDbGraphBuild() {
+  if (!graphDatabaseForm.connectionName.trim() || !graphDatabaseForm.tableNames.trim()) {
+    showToast("请补充数据库连接和数据表信息");
+    return;
+  }
+  showToast("数据库导出构图任务已提交");
+}
+
+function selectGraphLibrary(libraryId) {
+  selectedGraphLibraryId.value = libraryId;
+  selectedGraphVersionId.value = graphLibraries.value.find((item) => item.id === libraryId)?.versions[0]?.id || "";
+}
+
+function selectGraphVersion(versionId) {
+  selectedGraphVersionId.value = versionId;
 }
 
 async function refreshAll() {
@@ -775,6 +1621,9 @@ function formatDate(value) {
 }
 
 onMounted(() => {
+  if (isGraphPage(currentPage.value)) {
+    loadGraphBuilderConfig().catch((error) => showToast(error.message));
+  }
   refreshAll().catch((error) => showToast(error.message));
   pollTimer = window.setInterval(() => {
     refreshAll().catch(() => {});
@@ -824,6 +1673,32 @@ onUnmounted(() => {
             <button :class="{ active: currentPage === 'models' }" type="button" @click="switchPage('models')">
               <Archive />
               <span>微调模型管理</span>
+            </button>
+          </div>
+        </nav>
+
+        <nav class="domain-menu">
+          <button class="menu-parent" :class="{ active: ['graphCreate', 'graphFusion', 'graphDatabase', 'graphVersions'].includes(currentPage) }" type="button">
+            <Database />
+            <span>多层次知识图谱构建</span>
+            <ChevronDown />
+          </button>
+          <div class="sub-menu">
+            <button :class="{ active: currentPage === 'graphCreate' }" type="button" @click="switchPage('graphCreate')">
+              <FileUp />
+              <span>新建知识库</span>
+            </button>
+            <button :class="{ active: currentPage === 'graphDatabase' }" type="button" @click="switchPage('graphDatabase')">
+              <Database />
+              <span>数据库导出构建</span>
+            </button>
+            <button :class="{ active: currentPage === 'graphFusion' }" type="button" @click="switchPage('graphFusion')">
+              <Layers />
+              <span>图谱融合构建</span>
+            </button>
+            <button :class="{ active: currentPage === 'graphVersions' }" type="button" @click="switchPage('graphVersions')">
+              <Archive />
+              <span>版本管理</span>
             </button>
           </div>
         </nav>
@@ -1587,6 +2462,695 @@ onUnmounted(() => {
               </div>
             </div>
           </section>
+        </section>
+
+        <section v-if="currentPage === 'graphCreate'" class="graph-page">
+          <section class="guide-card">
+            <div class="section-title">能力概览</div>
+            <div class="guide-steps graph-guide-steps">
+              <div>
+                <div class="guide-icon"><FileUp /></div>
+                <strong>多源构图</strong>
+                <span>从文档、表格、图片统一抽取实体与关系</span>
+              </div>
+              <i></i>
+              <div>
+                <div class="guide-icon"><Layers /></div>
+                <strong>图谱融合</strong>
+                <span>对已有知识图谱进行对齐、归并与溯源</span>
+              </div>
+              <i></i>
+              <div>
+                <div class="guide-icon"><Database /></div>
+                <strong>数据抽取</strong>
+                <span>从业务数据库导出主题数据并映射为图谱</span>
+              </div>
+              <i></i>
+              <div>
+                <div class="guide-icon"><Archive /></div>
+                <strong>版本治理</strong>
+                <span>按版本追踪图谱变化并查看可视化结构</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="dashboard-grid">
+            <div class="metric-card blue-tint">
+              <div class="metric-icon"><Database /></div>
+              <span>知识库数量</span>
+              <strong>{{ graphLibraryCount }}</strong>
+            </div>
+            <div class="metric-card green-tint">
+              <div class="metric-icon"><Layers /></div>
+              <span>累计实体数</span>
+              <strong>{{ graphEntityCount }}</strong>
+            </div>
+            <div class="metric-card orange-tint">
+              <div class="metric-icon"><Activity /></div>
+              <span>累计关系数</span>
+              <strong>{{ graphRelationCount }}</strong>
+            </div>
+          </section>
+
+          <div class="graph-builder-grid">
+            <section class="panel-card graph-inner-card">
+              <div class="panel-title">
+                <h2>知识库信息</h2>
+                <span class="tag processing">文档 / 表格 / 图片</span>
+              </div>
+              <form class="train-form" @submit.prevent="submitGraphCreate">
+                <div class="form-grid two">
+                  <label>
+                    <span>知识库名称</span>
+                    <input v-model="graphCreateForm.name" placeholder="请输入知识库名称" />
+                  </label>
+                  <label>
+                    <span>业务领域</span>
+                    <input v-model="graphCreateForm.businessDomain" placeholder="例如：设备运维" />
+                  </label>
+                  <label>
+                    <span>图谱层次策略</span>
+                    <select v-model="graphCreateForm.layerStrategy">
+                      <option value="文档层 + 实体层 + 关系层">文档层 + 实体层 + 关系层</option>
+                      <option value="文档层 + 实体层 + 关系层 + 事件层">文档层 + 实体层 + 关系层 + 事件层</option>
+                      <option value="对象层 + 结构层 + 规则层">对象层 + 结构层 + 规则层</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>说明</span>
+                    <input v-model="graphCreateForm.description" placeholder="说明本次构图目标和范围" />
+                  </label>
+                </div>
+
+                <div class="graph-upload-grid">
+                  <label class="upload-field graph-upload-field">
+                    <input type="file" multiple accept=".pdf,.doc,.docx,.txt,.md,.xls,.xlsx,.csv" @change="onCreateSourceFilesChange" />
+                    <FileUp />
+                    <span>上传文档与表格</span>
+                  </label>
+                  <label class="upload-field graph-upload-field">
+                    <input type="file" multiple accept=".png,.jpg,.jpeg,.bmp" @change="onCreateImageFilesChange" />
+                    <FileUp />
+                    <span>上传图片资料</span>
+                  </label>
+                </div>
+
+                <div class="graph-file-summary">
+                  <div>
+                    <strong>已选结构化 / 非结构化文件</strong>
+                    <small>{{ createSourceFiles.length ? createSourceFiles.map((item) => item.name).join("、") : "暂无文件" }}</small>
+                  </div>
+                  <div>
+                    <strong>已选图片</strong>
+                    <small>{{ createImageFiles.length ? createImageFiles.map((item) => item.name).join("、") : "暂无图片" }}</small>
+                  </div>
+                </div>
+
+                <section class="graph-define-card">
+                  <div class="panel-title graph-mini-title">
+                    <h2>最近分析任务</h2>
+                    <span class="tag processing">{{ graphAnalysisTasks.length }} 条</span>
+                  </div>
+                  <div class="graph-task-list">
+                    <button
+                      v-for="item in graphAnalysisTasks"
+                      :key="item.id"
+                      class="graph-task-item"
+                      :class="{ active: graphAnalysisTaskId === item.id }"
+                      type="button"
+                      @click="loadGraphAnalysisTask(item.id)"
+                    >
+                      <div>
+                        <strong>{{ item.knowledge_base_name || item.filename || "未命名分析任务" }}</strong>
+                        <small>{{ item.filename }} · {{ item.analysis_source }}</small>
+                      </div>
+                      <div class="graph-schema-actions">
+                        <span class="tag" :class="item.status === '已确认' ? 'success' : 'danger'">{{ item.status }}</span>
+                        <span class="tag">{{ formatDate(item.updated_at) }}</span>
+                      </div>
+                    </button>
+                    <div v-if="!graphAnalysisTasks.length" class="empty-state">上传 CSV / Excel 后会自动生成分析任务记录</div>
+                  </div>
+                </section>
+
+                <section class="graph-define-card">
+                  <div class="panel-title graph-mini-title">
+                    <h2>原始表头展示</h2>
+                    <span class="tag processing">{{ graphRawHeaders.length }} 个字段</span>
+                  </div>
+                  <div class="graph-header-grid">
+                    <div v-for="item in graphRawHeaders" :key="item.id" class="graph-header-card">
+                      <strong>{{ item.name }}</strong>
+                      <small>{{ item.role }}</small>
+                      <p>示例值：{{ item.sample }}</p>
+                      <em>{{ item.description }}</em>
+                    </div>
+                  </div>
+                  <div class="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th v-for="item in graphRawHeaders" :key="item.id">{{ item.name }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(row, index) in graphSampleRows" :key="`sample-${index}`">
+                          <td v-for="item in graphRawHeaders" :key="`${item.id}-${index}`">{{ row[item.name] }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <div class="graph-define-grid">
+                  <section class="graph-define-card">
+                    <div class="panel-title graph-mini-title">
+                      <h2>模型建议的节点</h2>
+                      <span class="tag processing">{{ graphModelNodeSuggestions.length }} 条</span>
+                    </div>
+                    <div class="graph-schema-list">
+                      <div v-for="item in graphModelNodeSuggestions" :key="item.id" class="graph-schema-item">
+                        <div>
+                          <strong>{{ item.header }}</strong>
+                          <small>建议节点类型：{{ item.node_type }} · {{ item.reason }}</small>
+                        </div>
+                        <span class="tag" :class="item.confidence === '高' ? 'success' : 'processing'">{{ item.confidence }}</span>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section class="graph-define-card">
+                    <div class="panel-title graph-mini-title">
+                      <h2>模型建议的关系</h2>
+                      <span class="tag processing">{{ graphModelRelationSuggestions.length }} 条</span>
+                    </div>
+                    <div class="graph-schema-list">
+                      <div v-for="item in graphModelRelationSuggestions" :key="item.id" class="graph-schema-item">
+                        <div>
+                          <strong>{{ item.source_header }} -> {{ item.relation }} -> {{ item.target_header }}</strong>
+                          <small>{{ item.reason }}</small>
+                        </div>
+                        <span class="tag" :class="item.confidence === '高' ? 'success' : 'processing'">{{ item.confidence }}</span>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+
+                <section class="graph-define-card">
+                  <div class="panel-title graph-mini-title">
+                    <h2>用户确认修改区</h2>
+                    <div class="graph-schema-actions">
+                      <span class="tag danger">{{ graphHeaderConfirmations.filter((item) => item.status === "待确认").length }} 条待确认</span>
+                      <button class="secondary-button" type="button" @click="addGraphHeaderConfirmation">
+                        <Plus />
+                        <span>新增确认规则</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>起点表头</th>
+                          <th>起点节点类型</th>
+                          <th>关系</th>
+                          <th>终点表头</th>
+                          <th>终点节点类型</th>
+                          <th>状态</th>
+                          <th class="action-col">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="item in graphHeaderConfirmations" :key="item.id">
+                          <td>
+                            <select v-model="item.source_header">
+                              <option v-for="header in graphHeaderOptions" :key="`source-${item.id}-${header}`" :value="header">{{ header }}</option>
+                            </select>
+                          </td>
+                          <td>
+                            <select v-model="item.source_type">
+                              <option v-for="nodeType in graphNodeTypes" :key="`source-type-${item.id}-${nodeType.id}`" :value="nodeType.name">
+                                {{ nodeType.name }}
+                              </option>
+                            </select>
+                          </td>
+                          <td>
+                            <select v-model="item.relation">
+                              <option v-for="relationType in graphRelationTypes" :key="`relation-${item.id}-${relationType.id}`" :value="relationType.name">
+                                {{ relationType.name }}
+                              </option>
+                            </select>
+                          </td>
+                          <td>
+                            <select v-model="item.target_header">
+                              <option v-for="header in graphHeaderOptions" :key="`target-${item.id}-${header}`" :value="header">{{ header }}</option>
+                            </select>
+                          </td>
+                          <td>
+                            <select v-model="item.target_type">
+                              <option v-for="nodeType in graphNodeTypes" :key="`target-type-${item.id}-${nodeType.id}`" :value="nodeType.name">
+                                {{ nodeType.name }}
+                              </option>
+                            </select>
+                          </td>
+                          <td><span class="tag" :class="item.status === '已确认' ? 'success' : 'danger'">{{ item.status }}</span></td>
+                          <td class="action-col graph-triple-actions">
+                            <button class="text-button" type="button" @click="confirmGraphHeaderRule(item.id)">确认</button>
+                            <button class="text-button danger-text" type="button" @click="deleteGraphHeaderRule(item.id)">删除</button>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <section class="graph-define-card">
+                  <div class="panel-title graph-mini-title">
+                    <h2>三元组预览区</h2>
+                    <span class="tag success">{{ graphTriplePreviewItems.length }} 条</span>
+                  </div>
+                  <div class="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>来源行</th>
+                          <th>起点节点</th>
+                          <th>关系</th>
+                          <th>终点节点</th>
+                          <th>状态</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="item in graphTriplePreviewItems" :key="item.id">
+                          <td>{{ item.row_label }}</td>
+                          <td>
+                            <strong>{{ item.source }}</strong>
+                            <small>{{ item.source_type }}</small>
+                          </td>
+                          <td><span class="tag processing">{{ item.relation }}</span></td>
+                          <td>
+                            <strong>{{ item.target }}</strong>
+                            <small>{{ item.target_type }}</small>
+                          </td>
+                          <td><span class="tag" :class="item.status === '已确认' ? 'success' : 'danger'">{{ item.status }}</span></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                <div class="form-actions">
+                  <button class="primary-button" type="submit">
+                    <PackageCheck />
+                    <span>开始构建</span>
+                  </button>
+                </div>
+              </form>
+            </section>
+
+              <section class="panel-card graph-inner-card">
+                <div class="panel-title">
+                  <h2>构建知识图谱流程建议</h2>
+                  <span class="tag">模型抽取 + 人工确认</span>
+                </div>
+                <div class="graph-process-list">
+                  <div>
+                    <strong>1. 上传原始业务资料</strong>
+                    <small>优先上传真实业务表格、设备台账、故障记录、工艺记录等原始数据，不要求用户提前整理成三元组；文档、表格、图片分别接入，保留来源文件信息。</small>
+                  </div>
+                  <div>
+                    <strong>2. 大模型识别表头语义</strong>
+                    <small>由大模型理解字段含义，判断哪些表头适合作为设备、故障、组织、备件、位置等节点，哪些字段更适合作为属性或关系映射依据，并给出识别置信度。</small>
+                  </div>
+                  <div>
+                    <strong>3. 自动生成候选关系</strong>
+                    <small>基于表头语义和样例数据，自动推断字段之间可能存在的关系，例如“设备名称 -> 出现 -> 故障现象”“责任班组 -> 负责 -> 设备名称”，形成候选规则供审核。</small>
+                  </div>
+                  <div>
+                    <strong>4. 用户确认并修正规则</strong>
+                    <small>由业务人员确认起点表头、终点表头、节点类型和关系名称；对识别不准确的内容可直接修改、删除或新增，确保关系两端节点定义符合现场业务语义。</small>
+                  </div>
+                  <div>
+                    <strong>5. 生成三元组预览并校验</strong>
+                    <small>系统根据确认后的规则，从样例数据中生成三元组预览，展示每条关系的来源行、起点节点、关系、终点节点和状态，便于入库前核查准确性。</small>
+                  </div>
+                  <div>
+                    <strong>6. 确认入库并保留任务记录</strong>
+                    <small>确认后的节点、关系和三元组作为本次构图任务结果入库，同时保留抽取任务、确认规则、来源文件和预览结果，方便后续追溯、版本管理和图谱融合。</small>
+                  </div>
+                </div>
+                <div class="graph-highlight-card">
+                  <h3>推荐输出内容</h3>
+                  <ul class="graph-inline-list">
+                    <li>表头语义识别</li>
+                    <li>候选节点清单</li>
+                    <li>候选关系规则</li>
+                    <li>三元组预览</li>
+                    <li>任务追溯记录</li>
+                  </ul>
+                </div>
+              </section>
+          </div>
+        </section>
+
+        <section v-if="currentPage === 'graphFusion'" class="graph-page">
+          <section class="graph-fusion-grid">
+            <section class="panel-card graph-inner-card">
+              <div class="panel-title">
+                <h2>选择已有知识库</h2>
+                <span class="tag processing">{{ selectedFusionGraphIds.length }} 个已选</span>
+              </div>
+              <div class="graph-check-list">
+                <button
+                  v-for="item in graphLibraries"
+                  :key="item.id"
+                  class="graph-check-card"
+                  :class="{ selected: activeFusionLibraryId === item.id }"
+                  type="button"
+                  @click="setActiveFusionLibrary(item.id)"
+                >
+                  <div>
+                    <strong>{{ item.name }}</strong>
+                    <small>{{ item.domain }} · {{ item.source }}</small>
+                  </div>
+                  <span class="tag">{{ item.children?.length || 0 }} 个子库</span>
+                </button>
+              </div>
+              <div class="graph-sub-library-panel">
+                <div class="graph-sub-library-header">
+                  <div>
+                    <strong>{{ activeFusionLibrary?.name || "-" }}</strong>
+                    <small>请选择下方子知识库参与融合</small>
+                  </div>
+                  <span class="tag processing">{{ activeFusionChildren.length }} 个子库</span>
+                </div>
+                <div class="search-field graph-search-field">
+                  <Search />
+                  <input v-model="fusionSearch" placeholder="搜索子知识库名称或场景" />
+                </div>
+                <div class="graph-sub-library-list">
+                  <button
+                    v-for="child in activeFusionChildren"
+                    :key="child.id"
+                    class="graph-sub-library-card"
+                    :class="{ selected: selectedFusionGraphIds.includes(child.id) }"
+                    type="button"
+                    @click="toggleFusionGraph(child.id)"
+                  >
+                    <div>
+                      <strong>{{ child.name }}</strong>
+                      <small>{{ child.scene }}</small>
+                    </div>
+                    <div class="graph-sub-library-meta">
+                      <span class="tag">{{ child.entity_count }} 实体</span>
+                      <span class="tag processing">{{ child.relation_count }} 关系</span>
+                    </div>
+                  </button>
+                </div>
+                <div class="graph-selected-summary">
+                  <div class="panel-title graph-mini-title">
+                    <h2>已选子知识库汇总</h2>
+                    <span class="tag success">{{ fusionSourceGraphs.length }} 个</span>
+                  </div>
+                  <div v-if="fusionSourceGraphs.length" class="graph-selected-list">
+                    <div v-for="item in fusionSourceGraphs" :key="item.id" class="graph-selected-item">
+                      <div>
+                        <strong>{{ item.name }}</strong>
+                        <small>{{ item.parent_name }} · {{ item.scene }}</small>
+                      </div>
+                      <div class="graph-sub-library-meta">
+                        <span class="tag">{{ item.entity_count }} 实体</span>
+                        <span class="tag processing">{{ item.relation_count }} 关系</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="empty-state">请选择至少两个子知识库</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel-card graph-inner-card">
+              <div class="panel-title">
+                <h2>融合策略</h2>
+                <span class="tag">实体对齐</span>
+              </div>
+              <form class="train-form" @submit.prevent="submitGraphFusion">
+                <div class="form-grid two">
+                  <label>
+                    <span>新图谱名称</span>
+                    <input v-model="graphFusionForm.name" placeholder="请输入融合后的图谱名称" />
+                  </label>
+                  <label>
+                    <span>融合模式</span>
+                    <select v-model="graphFusionForm.fusionMode">
+                      <option value="实体对齐优先">实体对齐优先</option>
+                      <option value="关系完整优先">关系完整优先</option>
+                      <option value="版本溯源优先">版本溯源优先</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>冲突处理规则</span>
+                    <input v-model="graphFusionForm.conflictRule" placeholder="例如：保留高可信版本" />
+                  </label>
+                  <label>
+                    <span>说明</span>
+                    <input v-model="graphFusionForm.description" placeholder="描述本次融合目标" />
+                  </label>
+                </div>
+
+                <div class="graph-fusion-preview">
+                  <strong>待融合子知识库</strong>
+                  <div class="graph-chip-row">
+                    <span v-for="item in fusionSourceGraphs" :key="item.id" class="tag processing">{{ item.parent_name }} / {{ item.name }}</span>
+                  </div>
+                </div>
+
+                <div class="graph-fusion-preview">
+                  <strong>融合前检查</strong>
+                  <div class="graph-chip-row">
+                    <span class="tag processing">实体对齐候选 {{ graphAlignmentPreview.length }}</span>
+                    <span class="tag">{{ graphAlignmentPendingCount }} 条待确认</span>
+                    <span class="tag danger">高优先冲突 {{ graphConflictHighCount }}</span>
+                  </div>
+                </div>
+
+                <div class="form-actions">
+                  <button class="primary-button" type="submit">
+                    <Layers />
+                    <span>提交融合构建</span>
+                  </button>
+                </div>
+              </form>
+
+              <div class="graph-detail-grid">
+                <section class="graph-detail-card">
+                  <div class="panel-title graph-mini-title">
+                    <h2>实体对齐预览</h2>
+                    <span class="tag processing">{{ graphAlignmentPreview.length }} 条</span>
+                  </div>
+                  <div class="graph-detail-list">
+                    <div v-for="item in graphAlignmentPreview" :key="item.id" class="graph-detail-item">
+                      <div class="graph-detail-main">
+                        <strong>{{ item.left }}</strong>
+                        <small>{{ item.right }}</small>
+                      </div>
+                      <div class="graph-detail-meta">
+                        <span class="tag">{{ item.confidence }}</span>
+                        <span class="tag processing">{{ item.rule }}</span>
+                        <span class="tag" :class="item.decision === '待确认' ? 'danger' : 'success'">{{ item.decision }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="graph-detail-card">
+                  <div class="panel-title graph-mini-title">
+                    <h2>冲突项待确认</h2>
+                    <span class="tag danger">{{ graphConflictItems.length }} 项</span>
+                  </div>
+                  <div class="graph-detail-list">
+                    <div v-for="item in graphConflictItems" :key="item.id" class="graph-detail-item">
+                      <div class="graph-detail-main">
+                        <strong>{{ item.entity }} · {{ item.field }}</strong>
+                        <small>{{ item.left }} / {{ item.right }}</small>
+                      </div>
+                      <div class="graph-detail-meta">
+                        <span class="tag" :class="item.severity === '高' ? 'danger' : 'processing'">{{ item.severity }}优先级</span>
+                        <span class="tag">{{ item.suggestion }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </section>
+          </section>
+        </section>
+
+        <section v-if="currentPage === 'graphDatabase'" class="graph-page">
+          <div class="graph-builder-grid">
+            <section class="panel-card graph-inner-card">
+              <div class="panel-title">
+                <h2>数据库构图配置</h2>
+                <span class="tag processing">主数据抽取</span>
+              </div>
+              <form class="train-form" @submit.prevent="submitDbGraphBuild">
+                <div class="form-grid two">
+                  <label>
+                    <span>知识库名称</span>
+                    <input v-model="graphDatabaseForm.name" placeholder="请输入知识库名称" />
+                  </label>
+                  <label>
+                    <span>数据库类型</span>
+                    <select v-model="graphDatabaseForm.databaseType">
+                      <option value="PostgreSQL">PostgreSQL</option>
+                      <option value="MySQL">MySQL</option>
+                      <option value="SQL Server">SQL Server</option>
+                      <option value="Oracle">Oracle</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>连接名称</span>
+                    <input v-model="graphDatabaseForm.connectionName" placeholder="请输入只读连接名称" />
+                  </label>
+                  <label>
+                    <span>Schema / 库</span>
+                    <input v-model="graphDatabaseForm.schemaName" placeholder="public" />
+                  </label>
+                  <label>
+                    <span>数据表</span>
+                    <input v-model="graphDatabaseForm.tableNames" placeholder="多个表以逗号分隔" />
+                  </label>
+                  <label>
+                    <span>同步模式</span>
+                    <select v-model="graphDatabaseForm.syncMode">
+                      <option value="按主题导出后构图">按主题导出后构图</option>
+                      <option value="全量导出后构图">全量导出后构图</option>
+                      <option value="增量抽取构图">增量抽取构图</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="form-actions">
+                  <button class="primary-button" type="submit">
+                    <Database />
+                    <span>开始导出构图</span>
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <section class="panel-card graph-inner-card">
+              <div class="panel-title">
+                <h2>抽取范围</h2>
+                <span class="tag">数据库表映射</span>
+              </div>
+              <div class="graph-process-list">
+                <div>
+                  <strong>设备主数据</strong>
+                  <small>设备编码、位置、责任组织、设备类型等基础主数据。</small>
+                </div>
+                <div>
+                  <strong>运维事件</strong>
+                  <small>工单、保养策略、故障标签、执行记录等事件链路。</small>
+                </div>
+                <div>
+                  <strong>备件与物料</strong>
+                  <small>备件编码、替代件、供应关系、库存状态。</small>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section v-if="currentPage === 'graphVersions'" class="graph-page">
+          <div class="graph-version-layout">
+            <section class="panel-card graph-inner-card">
+              <div class="panel-title">
+                <h2>知识库列表</h2>
+                <button class="secondary-button" type="button" @click="switchPage('graphCreate')">
+                  <Plus />
+                  <span>新增构图</span>
+                </button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>知识库</th>
+                      <th>来源</th>
+                      <th>层次</th>
+                      <th>更新时间</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="item in latestGraphLibraries"
+                      :key="item.id"
+                      :class="{ selected: selectedGraphLibraryId === item.id }"
+                      @click="selectGraphLibrary(item.id)"
+                    >
+                      <td>
+                        <strong>{{ item.name }}</strong>
+                        <small>{{ item.domain }} · {{ item.owner }}</small>
+                      </td>
+                      <td>{{ item.source }}</td>
+                      <td><span class="tag processing">{{ item.layers.length }} 层</span></td>
+                      <td>{{ formatDate(item.updated_at) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel-card graph-inner-card">
+              <div class="panel-title">
+                <h2>版本与可视化</h2>
+                <span class="tag success">{{ currentGraphVersion?.label || "未选择" }}</span>
+              </div>
+              <div class="graph-version-content">
+                <div class="graph-version-sidebar">
+                  <button
+                    v-for="version in currentGraphLibrary?.versions || []"
+                    :key="version.id"
+                    class="graph-version-button"
+                    :class="{ active: selectedGraphVersionId === version.id }"
+                    type="button"
+                    @click="selectGraphVersion(version.id)"
+                  >
+                    <strong>{{ version.label }}</strong>
+                    <small>{{ formatDate(version.updated_at) }}</small>
+                  </button>
+                </div>
+                <div class="graph-visual-panel">
+                  <div class="graph-visual-summary">
+                    <div>
+                      <strong>{{ currentGraphLibrary?.name || "-" }}</strong>
+                      <small>{{ currentGraphVersion?.summary || "请选择版本查看" }}</small>
+                    </div>
+                    <div class="graph-chip-row">
+                      <span class="tag processing">实体 {{ currentGraphVersion?.metrics?.entities || 0 }}</span>
+                      <span class="tag">关系 {{ currentGraphVersion?.metrics?.relations || 0 }}</span>
+                      <span class="tag">来源 {{ currentGraphVersion?.metrics?.sources || 0 }}</span>
+                    </div>
+                  </div>
+
+                  <div class="graph-canvas-mini">
+                    <div v-for="node in currentGraphVersion?.nodes || []" :key="node.id" class="graph-node-card">
+                      <strong>{{ node.label }}</strong>
+                      <small>{{ node.type }}</small>
+                    </div>
+                  </div>
+
+                  <div class="graph-edge-list">
+                    <strong>关系链路</strong>
+                    <div v-for="edge in currentGraphVersion?.edges || []" :key="edge">
+                      <small>{{ edge }}</small>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
         </section>
 
         <section v-if="currentPage === 'agentManage'" class="agent-manage-page">

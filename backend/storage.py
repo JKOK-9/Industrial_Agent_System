@@ -18,6 +18,11 @@ DEFAULT_REGISTRY = {
     "knowledge_sources": [],
     "prompt_assets": [],
     "agent_workflows": [],
+    "graph_node_types": [],
+    "graph_relation_types": [],
+    "graph_relation_rules": [],
+    "graph_triples": [],
+    "graph_analysis_tasks": [],
 }
 
 
@@ -96,6 +101,13 @@ class Registry:
                     self._write(data)
                     return removed
         return None
+
+    def replace_list(self, collection: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        with self._lock:
+            data = self._read()
+            data[collection] = items
+            self._write(data)
+        return items
 
 
 def utc_now() -> str:

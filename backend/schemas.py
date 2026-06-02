@@ -84,3 +84,68 @@ class AgentWorkflowRequest(BaseModel):
 
 class AgentRunRequest(BaseModel):
     input_text: str = Field(default="", max_length=8000)
+
+
+class GraphNodeTypeItem(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=80)
+    code: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=300)
+    count: int = Field(default=0, ge=0)
+
+
+class GraphRelationTypeItem(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=80)
+    code: str = Field(min_length=1, max_length=80)
+    description: str = Field(default="", max_length=300)
+    direction: Literal["单向", "双向"] = "单向"
+
+
+class GraphRelationRuleItem(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    source_type: str = Field(min_length=1, max_length=80)
+    relation: str = Field(min_length=1, max_length=80)
+    target_type: str = Field(min_length=1, max_length=80)
+    example: str = Field(default="", max_length=300)
+
+
+class GraphTripleItem(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    source: str = Field(min_length=1, max_length=120)
+    source_type: str = Field(min_length=1, max_length=80)
+    relation: str = Field(min_length=1, max_length=80)
+    target: str = Field(min_length=1, max_length=120)
+    target_type: str = Field(min_length=1, max_length=80)
+    origin: str = Field(default="", max_length=200)
+    status: Literal["待确认", "已确认", "已忽略"] = "待确认"
+
+
+class GraphNodeTypeListRequest(BaseModel):
+    items: list[GraphNodeTypeItem] = Field(default_factory=list)
+
+
+class GraphRelationTypeListRequest(BaseModel):
+    items: list[GraphRelationTypeItem] = Field(default_factory=list)
+
+
+class GraphRelationRuleListRequest(BaseModel):
+    items: list[GraphRelationRuleItem] = Field(default_factory=list)
+
+
+class GraphTripleListRequest(BaseModel):
+    items: list[GraphTripleItem] = Field(default_factory=list)
+
+
+class GraphConfirmationRuleItem(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    source_header: str = Field(min_length=1, max_length=120)
+    source_type: str = Field(min_length=1, max_length=80)
+    relation: str = Field(min_length=1, max_length=80)
+    target_header: str = Field(min_length=1, max_length=120)
+    target_type: str = Field(min_length=1, max_length=80)
+    status: Literal["待确认", "已确认"] = "待确认"
+
+
+class GraphConfirmationRuleListRequest(BaseModel):
+    items: list[GraphConfirmationRuleItem] = Field(default_factory=list)
