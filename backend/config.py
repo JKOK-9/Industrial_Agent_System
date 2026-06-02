@@ -19,6 +19,8 @@ REGISTRY_PATH = RUNTIME_DIR / "registry.json"
 
 LLAMAFACTORY_CLI = os.getenv("LLAMAFACTORY_CLI", "llamafactory-cli")
 LLAMAFACTORY_WORKDIR = os.getenv("LLAMAFACTORY_WORKDIR")
+CORS_ORIGINS = [item.strip() for item in os.getenv("AGENT_SYSTEM_CORS_ORIGINS", "*").split(",") if item.strip()]
+CORS_SUPPORTS_CREDENTIALS = os.getenv("AGENT_SYSTEM_CORS_SUPPORTS_CREDENTIALS", "false").lower() in {"1", "true", "yes"}
 
 
 def ensure_runtime_dirs() -> None:

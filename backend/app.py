@@ -4,7 +4,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from pydantic import ValidationError
 
-from .config import ensure_runtime_dirs
+from .config import CORS_ORIGINS, CORS_SUPPORTS_CREDENTIALS, ensure_runtime_dirs
 from .schemas import (
     AgentRunRequest,
     AgentWorkflowRequest,
@@ -41,7 +41,15 @@ def create_app() -> Flask:
     ensure_runtime_dirs()
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    CORS(
+        app,
+        resources={
+            r"/api/*": {
+                "origins": CORS_ORIGINS,
+                "supports_credentials": CORS_SUPPORTS_CREDENTIALS,
+            }
+        },
+    )
 
     @app.errorhandler(ValidationError)
     def handle_validation_error(error: ValidationError):

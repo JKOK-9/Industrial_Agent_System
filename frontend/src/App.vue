@@ -25,7 +25,8 @@ import {
   UserRound,
 } from "@lucide/vue";
 
-const apiBase = import.meta.env.VITE_API_BASE_URL || "";
+const runtimeConfig = window.__APP_CONFIG__ || {};
+const apiBase = runtimeConfig.apiBaseUrl || import.meta.env.VITE_API_BASE_URL || "";
 
 const pages = {
   train: { title: "微调模型训练", tab: "训练任务", subtitle: "选择基座模型、上传数据并提交 LoRA 微调任务" },
