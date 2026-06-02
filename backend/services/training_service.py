@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -162,12 +164,14 @@ class TrainingService:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         self.registry.update("training_jobs", job_id, {"status": "running", "started_at": utc_now()})
-        command = [LLAMAFACTORY_CLI, "train", job["config_path"]]
+        command = _llamafactory_command(job["config_path"])
         cwd = Path(LLAMAFACTORY_WORKDIR).resolve() if LLAMAFACTORY_WORKDIR else PROJECT_ROOT
         env = os.environ.copy()
+        env.setdefault("PYTHONIOENCODING", "utf-8")
 
         with log_path.open("a", encoding="utf-8", errors="replace") as log:
             log.write(f"Command: {' '.join(command)}\n")
+            log.write(f"Python executable: {sys.executable}\n")
             log.write(f"Working directory: {cwd}\n\n")
             log.flush()
             try:
@@ -216,7 +220,7 @@ class TrainingService:
                         {"status": "failed", "finished_at": utc_now(), "error": f"llamafactory-cli exited with {return_code}"},
                     )
             except FileNotFoundError:
-                message = f"找不到 {LLAMAFACTORY_CLI}，请安装 LLaMA-Factory 或设置 LLAMAFACTORY_CLI。"
+                message = f"找不到 LLaMA-Factory 命令：{' '.join(command)}。请安装 llamafactory 或设置 LLAMAFACTORY_CLI。"
                 log.write(f"\nERROR: {message}\n")
                 self.registry.update("training_jobs", job_id, {"status": "failed", "finished_at": utc_now(), "error": message})
                 with self._lock:
@@ -235,3 +239,35 @@ class TrainingService:
                     job["id"],
                     {"status": "interrupted", "error": "服务重启后无法继续追踪该训练进程。"},
                 )
+
+
+def _llamafactory_command(config_path: str) -> list[str]:
+    configured = (LLAMAFACTORY_CLI or "").strip()
+    if configured and configured != "llamafactory-cli":
+        return [*shlex.split(configured), "train", config_path]
+
+    cli = _find_executable("llamafactory-cli") or _find_executable("lmf")
+    if cli:
+        return [cli, "train", config_path]
+
+    return [sys.executable, "-m", "llamafactory.cli", "train", config_path]
+
+
+def _find_executable(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+
+    executable = Path(sys.executable).resolve()
+    candidates = [
+        executable.parent / name,
+        executable.parent / f"{name}.exe",
+        executable.parent / "Scripts" / name,
+        executable.parent / "Scripts" / f"{name}.exe",
+        executable.parent.parent / "Scripts" / name,
+        executable.parent.parent / "Scripts" / f"{name}.exe",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
