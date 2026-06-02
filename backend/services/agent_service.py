@@ -86,7 +86,8 @@ class AgentService:
             raise ValueError("顺序链路的最后一个节点必须是结果输出。")
 
     def _run_nodes(self, agent: dict, input_text: str) -> dict:
-        current = input_text.strip()
+        original_input = input_text.strip()
+        current = original_input
         contexts: list[dict[str, str]] = []
         trace: list[dict[str, Any]] = []
 
@@ -117,7 +118,7 @@ class AgentService:
 
             if node_type in {"llm", "finetuned"}:
                 model, base_model = self._resolve_model(node_type, config)
-                prompt, rag_contexts = self._build_prompt_for_node(node_type, model, config, contexts, current)
+                prompt, rag_contexts = self._build_prompt_for_node(node_type, model, config, contexts, current, original_input)
                 output = self._generate_model_output(node_type, model, base_model, prompt, config)
                 if config.get("filter_thinking", True):
                     output = THINK_PATTERN.sub("", output).strip()
@@ -176,23 +177,30 @@ class AgentService:
         config: dict,
         contexts: list[dict[str, str]],
         current: str,
+        original_input: str,
     ) -> tuple[str, list[dict]]:
         if node_type == "finetuned" and model.get("model_type") == "rag":
             rag_payload = self.rag_service.build_prompt(model["id"], current, int(config.get("top_k") or 4))
             extra_prompt = config.get("prompt", "").strip()
-            context_prompt = self._build_model_prompt(extra_prompt, contexts, current) if contexts or extra_prompt else ""
+            context_prompt = (
+                self._build_model_prompt(extra_prompt, contexts, current, original_input)
+                if contexts or extra_prompt or original_input != current
+                else ""
+            )
             prompt = rag_payload["prompt"]
             if context_prompt:
                 prompt = f"{context_prompt}\n\nRAG封装提示：\n{prompt}"
             return prompt, rag_payload.get("contexts", [])
 
-        return self._build_model_prompt(config.get("prompt", ""), contexts, current), []
+        return self._build_model_prompt(config.get("prompt", ""), contexts, current, original_input), []
 
-    def _build_model_prompt(self, prompt: str, contexts: list[dict[str, str]], current: str) -> str:
+    def _build_model_prompt(self, prompt: str, contexts: list[dict[str, str]], current: str, original_input: str) -> str:
         context_text = "\n\n".join(f"[{item['name']}]\n{item['content']}" for item in contexts)
         parts = []
         if prompt:
             parts.append(f"节点提示词：\n{prompt}")
+        if original_input and original_input != current:
+            parts.append(f"原始用户输入：\n{original_input}")
         if context_text:
             parts.append(f"知识库上下文：\n{context_text}")
         parts.append(f"当前输入：\n{current}")
