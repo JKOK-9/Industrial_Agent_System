@@ -623,21 +623,44 @@ async function deleteFineTunedModel(model) {
   await refreshAll();
 }
 
+function isActiveTrainingJob(job) {
+  return ["queued", "running"].includes(job?.status);
+}
+
+async function stopTrainingJob(job) {
+  if (!window.confirm(`停止训练任务 ${job.output_name}？日志和任务记录会保留。`)) return;
+  const payload = await fetchJSON(`/api/training/jobs/${job.id}/stop`, { method: "POST" });
+  if (payload.job?.id) {
+    selectedJobId.value = payload.job.id;
+    await loadLogs(payload.job.id);
+  }
+  showToast("训练任务已停止");
+  await refreshAll();
+}
+
 async function deleteTrainingJobHistory(job) {
-  if (!window.confirm(`删除训练任务记录 ${job.output_name}？模型文件和微调模型不会被删除。`)) return;
+  const active = isActiveTrainingJob(job);
+  const message = active
+    ? `停止并删除训练任务 ${job.output_name}？将清除中间输出、数据集缓存和日志。`
+    : `删除训练任务记录 ${job.output_name}？成功产出的模型文件和微调模型不会被删除。`;
+  if (!window.confirm(message)) return;
   await fetchJSON(`/api/training/jobs/${job.id}`, { method: "DELETE" });
   if (selectedJobId.value === job.id) {
     selectedJobId.value = "";
     logContent.value = "";
   }
-  showToast("训练任务记录已删除");
+  showToast(active ? "训练任务已停止并删除" : "训练任务记录已删除");
   await refreshAll();
 }
 
 async function deleteDownloadJobHistory(job) {
-  if (!window.confirm(`删除下载任务记录 ${job.display_name}？已下载模型不会被删除。`)) return;
+  const active = ["pending", "running", "downloading"].includes(job.status);
+  const message = active
+    ? `停止下载任务 ${job.display_name} 并清除已下载缓存？`
+    : `删除下载任务记录 ${job.display_name}？已下载模型不会被删除。`;
+  if (!window.confirm(message)) return;
   await fetchJSON(`/api/download-jobs/${job.id}`, { method: "DELETE" });
-  showToast("下载任务记录已删除");
+  showToast(active ? "下载任务已停止，缓存已清除" : "下载任务记录已删除");
   await refreshAll();
 }
 
@@ -1140,6 +1163,15 @@ onUnmounted(() => {
                       <small v-if="job.domain">领域：{{ job.domain }}</small>
                     </span>
                     <em class="tag" :class="statusClass(job.status)">{{ statusText(job.status) }}</em>
+                  </button>
+                  <button
+                    v-if="isActiveTrainingJob(job)"
+                    class="history-stop"
+                    type="button"
+                    aria-label="停止训练任务"
+                    @click.stop="stopTrainingJob(job)"
+                  >
+                    <Power />
                   </button>
                   <button class="history-delete" type="button" aria-label="删除训练任务记录" @click="deleteTrainingJobHistory(job)">
                     <Trash2 />

@@ -1,19 +1,31 @@
 from __future__ import annotations
 
+import json
+import os
+import signal
 import shutil
+import subprocess
+import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
 from .safe_paths import safe_name
-from ..config import BASE_MODELS_DIR, LOGS_DIR, is_path_inside
+from ..config import BASE_MODELS_DIR, CONFIGS_DIR, LOGS_DIR, PROJECT_ROOT, is_path_inside
 from ..schemas import BaseModelDownloadRequest
 from ..storage import Registry, utc_now
+
+
+ACTIVE_DOWNLOAD_STATUSES = {"pending", "running", "downloading"}
 
 
 class ModelService:
     def __init__(self, registry: Registry) -> None:
         self.registry = registry
+        self._process_lock = threading.RLock()
+        self._download_processes: dict[str, subprocess.Popen] = {}
+        self._cancelled_downloads: set[str] = set()
 
     def list_base_models(self) -> list[dict]:
         return sorted(self.registry.list("base_models"), key=lambda item: item.get("created_at", ""), reverse=True)
@@ -53,8 +65,11 @@ class ModelService:
         self.registry.add("base_models", model)
         self.registry.add("download_jobs", job)
 
-        thread = threading.Thread(target=self._download_worker, args=(request, model, job), daemon=True)
-        thread.start()
+        if request.source == "local":
+            thread = threading.Thread(target=self._download_worker, args=(request, model, job), daemon=True)
+            thread.start()
+        else:
+            self._start_download_process(request, model, job)
         return job
 
     def delete_base_model(self, model_id: str) -> bool:
@@ -76,10 +91,153 @@ class ModelService:
         job = self.registry.get("download_jobs", job_id)
         if not job:
             return False
-        if job.get("status") in {"pending", "running", "downloading"}:
-            raise ValueError("下载任务仍在进行中，暂不能删除历史记录。")
+        if job.get("status") in ACTIVE_DOWNLOAD_STATUSES:
+            self._cancel_download_job(job)
+            return True
         self.registry.delete("download_jobs", job_id)
         return True
+
+    def _start_download_process(self, request: BaseModelDownloadRequest, model: dict, job: dict) -> None:
+        log_path = Path(job["log_path"])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        payload_path = CONFIGS_DIR / f"download-{job['id']}.json"
+        payload = {
+            "job_id": job["id"],
+            "model_record_id": model["id"],
+            "source": request.source,
+            "repo_id": request.model_id,
+            "destination": model["path"],
+            "log_path": job["log_path"],
+        }
+        payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        command = [sys.executable, "-m", "backend.services.model_download_worker", str(payload_path)]
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(f"Command: {' '.join(command)}\n")
+            process = subprocess.Popen(
+                command,
+                cwd=str(PROJECT_ROOT),
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                creationflags=creationflags,
+            )
+
+        with self._process_lock:
+            self._download_processes[job["id"]] = process
+
+        self.registry.update("base_models", model["id"], {"status": "downloading"})
+        self.registry.update(
+            "download_jobs",
+            job["id"],
+            {"status": "running", "pid": process.pid, "payload_path": str(payload_path)},
+        )
+        thread = threading.Thread(target=self._monitor_download_process, args=(job["id"], model["id"], process), daemon=True)
+        thread.start()
+
+    def _monitor_download_process(self, job_id: str, model_id: str, process: subprocess.Popen) -> None:
+        return_code = process.wait()
+        with self._process_lock:
+            self._download_processes.pop(job_id, None)
+            cancelled = job_id in self._cancelled_downloads
+            if cancelled:
+                self._cancelled_downloads.discard(job_id)
+
+        job = self.registry.get("download_jobs", job_id)
+        if not job or cancelled:
+            return
+
+        model = self.registry.get("base_models", model_id)
+        if not model:
+            self.registry.update("download_jobs", job_id, {"status": "failed", "error": "模型记录不存在，下载结果已忽略。"})
+            return
+
+        log_path = Path(job["log_path"])
+        payload_path = Path(job.get("payload_path", ""))
+        try:
+            if return_code != 0:
+                raise RuntimeError(f"下载进程异常退出，退出码：{return_code}")
+            destination = Path(model["path"])
+            self._ensure_download_has_files(destination)
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write("Download completed.\n")
+            self.registry.update("base_models", model_id, {"status": "ready"})
+            self.registry.update("download_jobs", job_id, {"status": "succeeded"})
+        except Exception as exc:  # noqa: BLE001
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(f"ERROR: {exc}\n")
+            self.registry.update("base_models", model_id, {"status": "failed", "error": str(exc)})
+            self.registry.update("download_jobs", job_id, {"status": "failed", "error": str(exc)})
+        finally:
+            if payload_path.is_file():
+                payload_path.unlink(missing_ok=True)
+
+    def _cancel_download_job(self, job: dict) -> None:
+        job_id = job["id"]
+        with self._process_lock:
+            self._cancelled_downloads.add(job_id)
+            process = self._download_processes.get(job_id)
+
+        self._terminate_download_process(process, job.get("pid"))
+
+        model = self.registry.get("base_models", job.get("model_record_id", ""))
+        if model:
+            self._delete_partial_model(model)
+            self.registry.delete("base_models", model["id"])
+
+        payload_path = Path(job.get("payload_path", ""))
+        if payload_path.is_file():
+            payload_path.unlink(missing_ok=True)
+
+        log_path = Path(job.get("log_path", ""))
+        if log_path.is_file() and is_path_inside(log_path, LOGS_DIR):
+            log_path.unlink(missing_ok=True)
+
+        self.registry.delete("download_jobs", job_id)
+
+    def _delete_partial_model(self, model: dict) -> None:
+        path = Path(model.get("path", "")).resolve()
+        if model.get("managed") and is_path_inside(path, BASE_MODELS_DIR) and path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+
+    def _terminate_download_process(self, process: subprocess.Popen | None, pid_value: object) -> None:
+        if process and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=8)
+            return
+
+        try:
+            pid = int(pid_value)
+        except (TypeError, ValueError):
+            return
+        if pid <= 0:
+            return
+
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            return
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(1)
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        except OSError:
+            return
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            return
 
     def _download_worker(self, request: BaseModelDownloadRequest, model: dict, job: dict) -> None:
         log_path = Path(job["log_path"])

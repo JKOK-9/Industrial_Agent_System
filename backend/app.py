@@ -282,6 +282,13 @@ def create_app() -> Flask:
     def training_logs(job_id: str):
         return training_service.read_logs(job_id), 200, {"Content-Type": "text/plain; charset=utf-8"}
 
+    @app.post("/api/training/jobs/<job_id>/stop")
+    def stop_training_job(job_id: str):
+        job = training_service.stop_training_job(job_id)
+        if not job:
+            return jsonify({"detail": "训练任务记录不存在。"}), 404
+        return jsonify({"job": job})
+
     @app.post("/api/rag/models")
     def create_rag_model():
         knowledge_file = request.files.get("knowledge_file")
