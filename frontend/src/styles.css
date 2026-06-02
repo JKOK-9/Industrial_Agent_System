@@ -1091,6 +1091,13 @@ h2 {
   padding: 14px;
 }
 
+.graph-version-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 .graph-visual-summary {
   display: flex;
   align-items: start;
@@ -1103,9 +1110,7 @@ h2 {
 }
 
 .graph-canvas-mini {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  position: relative;
   min-height: 220px;
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -1115,20 +1120,71 @@ h2 {
     #fbfcff;
 }
 
-.graph-node-card {
-  display: grid;
-  gap: 4px;
-  align-content: center;
-  min-height: 82px;
-  border: 1px solid var(--blue-3);
-  border-radius: 8px;
-  padding: 12px;
-  background: linear-gradient(135deg, rgba(229, 241, 255, 0.82), #ffffff);
-  box-shadow: 0 4px 14px rgba(37, 63, 105, 0.08);
+.graph-canvas-stage {
+  position: relative;
+  width: 100%;
+  min-height: 308px;
 }
 
-.graph-node-card small {
+.graph-canvas-svg {
+  width: 100%;
+  height: 308px;
+  overflow: visible;
+}
+
+.graph-canvas-empty {
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  min-height: 308px;
   color: var(--grey-8);
+  text-align: center;
+}
+
+.graph-canvas-empty strong {
+  color: var(--grey-10);
+}
+
+.graph-link-line {
+  stroke: #7a8aa0;
+  stroke-width: 1.8;
+  opacity: 0.9;
+}
+
+.graph-link-pill {
+  fill: rgba(255, 255, 255, 0.96);
+  stroke: rgba(148, 163, 184, 0.65);
+}
+
+.graph-link-text {
+  fill: #41556d;
+  font-size: 11px;
+  text-anchor: middle;
+}
+
+.graph-node-point {
+  stroke: #ffffff;
+  stroke-width: 3;
+  filter: drop-shadow(0 8px 14px rgba(37, 63, 105, 0.16));
+}
+
+.graph-node-ring {
+  fill: none;
+  stroke-width: 1.5;
+  opacity: 0.18;
+}
+
+.graph-node-title {
+  fill: #1f2937;
+  font-size: 12px;
+  font-weight: 600;
+  text-anchor: middle;
+}
+
+.graph-node-type {
+  fill: #ffffff;
+  font-size: 10px;
+  text-anchor: middle;
 }
 
 .graph-edge-list {

@@ -36,6 +36,10 @@ LLAMAFACTORY_WORKDIR = os.getenv("LLAMAFACTORY_WORKDIR")
 GRAPH_LLM_API_KEY = os.getenv("GRAPH_LLM_API_KEY", "")
 GRAPH_LLM_BASE_URL = os.getenv("GRAPH_LLM_BASE_URL", "")
 GRAPH_LLM_MODEL = os.getenv("GRAPH_LLM_MODEL", "")
+NEO4J_URI = os.getenv("NEO4J_URI", "")
+NEO4J_USERNAME = os.getenv("NEO4J_USERNAME", "")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "")
 
 
 def ensure_runtime_dirs() -> None:

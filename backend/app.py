@@ -15,6 +15,7 @@ from .schemas import (
     GraphRelationRuleListRequest,
     GraphRelationTypeListRequest,
     GraphTripleListRequest,
+    GraphVersionSyncRequest,
     KnowledgeSourceRequest,
     PromptAssetRequest,
     RagConfigRequest,
@@ -27,6 +28,7 @@ from .services.graph_extraction_service import GraphExtractionService
 from .services.graph_service import GraphService
 from .services.model_service import ModelService
 from .services.model_runtime import ModelRuntime
+from .services.neo4j_graph_service import Neo4jGraphService
 from .services.rag_service import RagService
 from .services.resource_service import ResourceService
 from .services.training_service import TrainingService
@@ -40,6 +42,7 @@ rag_service = RagService(registry)
 resource_service = ResourceService(registry)
 graph_service = GraphService(registry)
 graph_extraction_service = GraphExtractionService()
+neo4j_graph_service = Neo4jGraphService()
 model_runtime = ModelRuntime()
 agent_service = AgentService(registry, model_runtime, rag_service)
 
@@ -243,6 +246,25 @@ def create_app() -> Flask:
         if not task:
             return jsonify({"detail": "分析任务不存在。"}), 404
         return jsonify({"item": task})
+
+    @app.get("/api/graph-builder/neo4j/status")
+    def get_graph_neo4j_status():
+        return jsonify(neo4j_graph_service.status())
+
+    @app.post("/api/graph-builder/versions/sync")
+    def sync_graph_version_to_neo4j():
+        payload = request.get_json(silent=True) or {}
+        sync_request = GraphVersionSyncRequest.model_validate(payload)
+        result = neo4j_graph_service.sync_version_graph(sync_request.model_dump())
+        return jsonify({"item": result}), 201
+
+    @app.get("/api/graph-builder/versions/<knowledge_base_id>/<version_id>/visualization")
+    def get_graph_version_visualization(knowledge_base_id: str, version_id: str):
+        try:
+            result = neo4j_graph_service.get_version_visualization(knowledge_base_id, version_id)
+        except ValueError as exc:
+            return jsonify({"detail": str(exc)}), 404
+        return jsonify(result)
 
     @app.get("/api/agents")
     def list_agents():

@@ -76,6 +76,10 @@ const graphAnalysisTasks = ref([]);
 const selectedGraphLibraryId = ref("kg-equip");
 const selectedGraphVersionId = ref("v3");
 const graphBuilderLoaded = ref(false);
+const neo4jStatus = ref({ configured: false, connected: false, database: "neo4j", uri: "" });
+const graphVisualization = ref({ version: null, nodes: [], relationships: [], metrics: null });
+const graphVisualizationLoading = ref(false);
+const graphVisualizationError = ref("");
 let toastTimer = 0;
 let pollTimer = 0;
 
@@ -594,6 +598,49 @@ const currentGraphLibrary = computed(() => graphLibraries.value.find((item) => i
 const currentGraphVersion = computed(
   () => currentGraphLibrary.value?.versions.find((item) => item.id === selectedGraphVersionId.value) || currentGraphLibrary.value?.versions[0],
 );
+const activeGraphSummary = computed(() => graphVisualization.value.version?.summary || currentGraphVersion.value?.summary || "请选择版本查看");
+const activeGraphMetrics = computed(() => graphVisualization.value.metrics || currentGraphVersion.value?.metrics || { entities: 0, relations: 0, sources: 0 });
+const graphCanvasModel = computed(() => {
+  const nodes = graphVisualization.value.nodes || [];
+  const relationships = graphVisualization.value.relationships || [];
+  const width = 860;
+  const height = 340;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const radiusX = Math.min(290, width * 0.33);
+  const radiusY = Math.min(118, height * 0.3);
+  const palette = ["#2563eb", "#0f766e", "#b45309", "#7c3aed", "#be123c", "#0369a1", "#15803d"];
+  const typeColors = new Map();
+  const positionedNodes = nodes.map((node, index) => {
+    const angle = (Math.PI * 2 * index) / Math.max(nodes.length, 1) - Math.PI / 2;
+    if (!typeColors.has(node.type)) {
+      typeColors.set(node.type, palette[typeColors.size % palette.length]);
+    }
+    return {
+      ...node,
+      x: centerX + Math.cos(angle) * radiusX,
+      y: centerY + Math.sin(angle) * radiusY,
+      color: typeColors.get(node.type),
+    };
+  });
+  const nodeMap = new Map(positionedNodes.map((node) => [node.id, node]));
+  const positionedRelationships = relationships
+    .map((edge, index) => {
+      const sourceNode = nodeMap.get(edge.source);
+      const targetNode = nodeMap.get(edge.target);
+      if (!sourceNode || !targetNode) return null;
+      return {
+        ...edge,
+        id: edge.id || `rel-${index + 1}`,
+        sourceNode,
+        targetNode,
+        midX: (sourceNode.x + targetNode.x) / 2,
+        midY: (sourceNode.y + targetNode.y) / 2,
+      };
+    })
+    .filter(Boolean);
+  return { width, height, nodes: positionedNodes, relationships: positionedRelationships };
+});
 const latestGraphLibraries = computed(() => [...graphLibraries.value].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 4));
 const selectedWorkflowNode = computed(() => workflowForm.nodes.find((node) => node.id === selectedWorkflowNodeId.value));
 const managedAgent = computed(() => agentWorkflows.value.find((agent) => agent.id === managedAgentId.value));
@@ -663,6 +710,9 @@ function switchPage(page) {
   currentPage.value = page;
   if (isGraphPage(page) && !graphBuilderLoaded.value) {
     loadGraphBuilderConfig().catch((error) => showToast(error.message));
+  }
+  if (page === "graphVersions") {
+    Promise.all([loadNeo4jStatus(), loadGraphVisualization()]).catch((error) => showToast(error.message));
   }
 }
 
@@ -1037,13 +1087,108 @@ function submitDbGraphBuild() {
   showToast("数据库导出构图任务已提交");
 }
 
-function selectGraphLibrary(libraryId) {
-  selectedGraphLibraryId.value = libraryId;
-  selectedGraphVersionId.value = graphLibraries.value.find((item) => item.id === libraryId)?.versions[0]?.id || "";
+async function loadNeo4jStatus() {
+  neo4jStatus.value = await fetchJSON("/api/graph-builder/neo4j/status");
 }
 
-function selectGraphVersion(versionId) {
+function buildGraphVersionSyncPayload() {
+  const library = currentGraphLibrary.value;
+  const version = currentGraphVersion.value;
+  if (!library || !version) {
+    throw new Error("请先选择知识库和版本。");
+  }
+  const labelToId = new Map((version.nodes || []).map((node) => [node.label, node.id]));
+  const edges = (version.edges || [])
+    .map((edge, index) => {
+      if (typeof edge === "string") {
+        const [sourceLabel, targetLabel] = edge.split("->").map((item) => item.trim()).filter(Boolean);
+        const source = labelToId.get(sourceLabel);
+        const target = labelToId.get(targetLabel);
+        if (!source || !target) return null;
+        return { id: `${version.id}-edge-${index + 1}`, source, target, relation: "关联" };
+      }
+      return {
+        id: edge.id || `${version.id}-edge-${index + 1}`,
+        source: edge.source,
+        target: edge.target,
+        relation: edge.relation || "关联",
+      };
+    })
+    .filter(Boolean);
+  return {
+    knowledge_base_id: library.id,
+    knowledge_base_name: library.name,
+    version_id: version.id,
+    version_label: version.label,
+    summary: version.summary || "",
+    domain: library.domain || "",
+    source: library.source || "",
+    owner: library.owner || "",
+    layers: library.layers || [],
+    nodes: (version.nodes || []).map((node) => ({
+      id: node.id,
+      label: node.label,
+      type: node.type || "实体",
+    })),
+    edges,
+  };
+}
+
+async function loadGraphVisualization() {
+  if (!selectedGraphLibraryId.value || !selectedGraphVersionId.value) {
+    graphVisualization.value = { version: null, nodes: [], relationships: [], metrics: null };
+    return;
+  }
+  graphVisualizationLoading.value = true;
+  graphVisualizationError.value = "";
+  try {
+    const payload = await fetchJSON(`/api/graph-builder/versions/${selectedGraphLibraryId.value}/${selectedGraphVersionId.value}/visualization`);
+    graphVisualization.value = {
+      version: payload.version || null,
+      nodes: payload.nodes || [],
+      relationships: payload.relationships || [],
+      metrics: payload.metrics || null,
+    };
+  } catch (error) {
+    graphVisualizationError.value = error.message || "Neo4j 图谱数据加载失败";
+    graphVisualization.value = { version: null, nodes: [], relationships: [], metrics: null };
+  } finally {
+    graphVisualizationLoading.value = false;
+  }
+}
+
+async function syncCurrentVersionToNeo4j() {
+  try {
+    const payload = buildGraphVersionSyncPayload();
+    await fetchJSON("/api/graph-builder/versions/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    showToast("当前版本已同步到 Neo4j");
+    await Promise.all([loadNeo4jStatus(), loadGraphVisualization()]);
+  } catch (error) {
+    showToast(error.message || "同步到 Neo4j 失败");
+  }
+}
+
+async function selectGraphLibrary(libraryId) {
+  selectedGraphLibraryId.value = libraryId;
+  selectedGraphVersionId.value = graphLibraries.value.find((item) => item.id === libraryId)?.versions[0]?.id || "";
+  try {
+    await loadGraphVisualization();
+  } catch (error) {
+    showToast(error.message || "图谱可视化加载失败");
+  }
+}
+
+async function selectGraphVersion(versionId) {
   selectedGraphVersionId.value = versionId;
+  try {
+    await loadGraphVisualization();
+  } catch (error) {
+    showToast(error.message || "图谱可视化加载失败");
+  }
 }
 
 async function refreshAll() {
@@ -1623,6 +1768,9 @@ function formatDate(value) {
 onMounted(() => {
   if (isGraphPage(currentPage.value)) {
     loadGraphBuilderConfig().catch((error) => showToast(error.message));
+  }
+  if (currentPage.value === "graphVersions") {
+    Promise.all([loadNeo4jStatus(), loadGraphVisualization()]).catch((error) => showToast(error.message));
   }
   refreshAll().catch((error) => showToast(error.message));
   pollTimer = window.setInterval(() => {
@@ -3105,7 +3253,16 @@ onUnmounted(() => {
             <section class="panel-card graph-inner-card">
               <div class="panel-title">
                 <h2>版本与可视化</h2>
-                <span class="tag success">{{ currentGraphVersion?.label || "未选择" }}</span>
+                <div class="graph-version-actions">
+                  <span class="tag" :class="neo4jStatus.connected ? 'success' : 'danger'">
+                    {{ neo4jStatus.connected ? `Neo4j / ${neo4jStatus.database || "neo4j"}` : neo4jStatus.configured ? "Neo4j 未连接" : "Neo4j 未配置" }}
+                  </span>
+                  <span class="tag success">{{ currentGraphVersion?.label || "未选择" }}</span>
+                  <button class="secondary-button" type="button" @click="syncCurrentVersionToNeo4j">
+                    <Database />
+                    <span>同步到 Neo4j</span>
+                  </button>
+                </div>
               </div>
               <div class="graph-version-content">
                 <div class="graph-version-sidebar">
@@ -3125,26 +3282,60 @@ onUnmounted(() => {
                   <div class="graph-visual-summary">
                     <div>
                       <strong>{{ currentGraphLibrary?.name || "-" }}</strong>
-                      <small>{{ currentGraphVersion?.summary || "请选择版本查看" }}</small>
+                      <small>{{ activeGraphSummary }}</small>
                     </div>
                     <div class="graph-chip-row">
-                      <span class="tag processing">实体 {{ currentGraphVersion?.metrics?.entities || 0 }}</span>
-                      <span class="tag">关系 {{ currentGraphVersion?.metrics?.relations || 0 }}</span>
-                      <span class="tag">来源 {{ currentGraphVersion?.metrics?.sources || 0 }}</span>
+                      <span class="tag processing">实体 {{ activeGraphMetrics.entities || 0 }}</span>
+                      <span class="tag">关系 {{ activeGraphMetrics.relations || 0 }}</span>
+                      <span class="tag">来源 {{ activeGraphMetrics.sources || 0 }}</span>
                     </div>
                   </div>
 
                   <div class="graph-canvas-mini">
-                    <div v-for="node in currentGraphVersion?.nodes || []" :key="node.id" class="graph-node-card">
-                      <strong>{{ node.label }}</strong>
-                      <small>{{ node.type }}</small>
+                    <div v-if="graphVisualizationLoading" class="graph-canvas-empty">正在从 Neo4j 加载图谱数据...</div>
+                    <div v-else-if="graphVisualizationError" class="graph-canvas-empty">
+                      <strong>Neo4j 图谱暂不可用</strong>
+                      <small>{{ graphVisualizationError }}</small>
+                    </div>
+                    <div v-else-if="!graphCanvasModel.nodes.length" class="graph-canvas-empty">
+                      <strong>当前版本在 Neo4j 中还没有图谱数据</strong>
+                      <small>点击“同步到 Neo4j”后，可在这里查看点对点关系图。</small>
+                    </div>
+                    <div v-else class="graph-canvas-stage">
+                      <svg class="graph-canvas-svg" :viewBox="`0 0 ${graphCanvasModel.width} ${graphCanvasModel.height}`" aria-label="知识图谱可视化">
+                        <defs>
+                          <marker id="graph-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+                            <path d="M0,0 L10,5 L0,10 z" fill="#7a8aa0" />
+                          </marker>
+                        </defs>
+                        <line
+                          v-for="edge in graphCanvasModel.relationships"
+                          :key="edge.id"
+                          class="graph-link-line"
+                          :x1="edge.sourceNode.x"
+                          :y1="edge.sourceNode.y"
+                          :x2="edge.targetNode.x"
+                          :y2="edge.targetNode.y"
+                          marker-end="url(#graph-arrow)"
+                        />
+                        <g v-for="edge in graphCanvasModel.relationships" :key="`${edge.id}-label`">
+                          <rect class="graph-link-pill" :x="edge.midX - 26" :y="edge.midY - 12" width="52" height="20" rx="10" />
+                          <text class="graph-link-text" :x="edge.midX" :y="edge.midY + 4">{{ edge.relation }}</text>
+                        </g>
+                        <g v-for="node in graphCanvasModel.nodes" :key="node.id">
+                          <circle class="graph-node-point" :cx="node.x" :cy="node.y" r="22" :fill="node.color" />
+                          <circle class="graph-node-ring" :cx="node.x" :cy="node.y" r="28" :stroke="node.color" />
+                          <text class="graph-node-title" :x="node.x" :y="node.y - 34">{{ node.label }}</text>
+                          <text class="graph-node-type" :x="node.x" :y="node.y + 5">{{ node.type }}</text>
+                        </g>
+                      </svg>
                     </div>
                   </div>
 
                   <div class="graph-edge-list">
                     <strong>关系链路</strong>
-                    <div v-for="edge in currentGraphVersion?.edges || []" :key="edge">
-                      <small>{{ edge }}</small>
+                    <div v-for="edge in graphVisualization.relationships || []" :key="edge.id || `${edge.source}-${edge.target}-${edge.relation}`">
+                      <small>{{ edge.source }} -> {{ edge.relation }} -> {{ edge.target }}</small>
                     </div>
                   </div>
                 </div>

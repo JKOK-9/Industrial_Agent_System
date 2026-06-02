@@ -149,3 +149,30 @@ class GraphConfirmationRuleItem(BaseModel):
 
 class GraphConfirmationRuleListRequest(BaseModel):
     items: list[GraphConfirmationRuleItem] = Field(default_factory=list)
+
+
+class GraphVersionNodeItem(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=200)
+    type: str = Field(default="实体", max_length=120)
+
+
+class GraphVersionEdgeItem(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    source: str = Field(min_length=1, max_length=120)
+    target: str = Field(min_length=1, max_length=120)
+    relation: str = Field(default="关联", min_length=1, max_length=120)
+
+
+class GraphVersionSyncRequest(BaseModel):
+    knowledge_base_id: str = Field(min_length=1, max_length=120)
+    knowledge_base_name: str = Field(min_length=1, max_length=200)
+    version_id: str = Field(min_length=1, max_length=120)
+    version_label: str = Field(min_length=1, max_length=200)
+    summary: str = Field(default="", max_length=1000)
+    domain: str = Field(default="", max_length=120)
+    source: str = Field(default="", max_length=120)
+    owner: str = Field(default="", max_length=120)
+    layers: list[str] = Field(default_factory=list)
+    nodes: list[GraphVersionNodeItem] = Field(default_factory=list)
+    edges: list[GraphVersionEdgeItem] = Field(default_factory=list)
