@@ -176,3 +176,12 @@ class GraphVersionSyncRequest(BaseModel):
     layers: list[str] = Field(default_factory=list)
     nodes: list[GraphVersionNodeItem] = Field(default_factory=list)
     edges: list[GraphVersionEdgeItem] = Field(default_factory=list)
+
+
+class GraphLibraryBuildRequest(BaseModel):
+    task_id: str = Field(min_length=1, max_length=120)
+    knowledge_base_name: str = Field(min_length=1, max_length=200)
+    business_domain: str = Field(default="", max_length=120)
+    layer_strategy: str = Field(default="", max_length=200)
+    description: str = Field(default="", max_length=1000)
+    source_types: list[str] = Field(default_factory=list)

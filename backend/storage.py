@@ -23,6 +23,7 @@ DEFAULT_REGISTRY = {
     "graph_relation_rules": [],
     "graph_triples": [],
     "graph_analysis_tasks": [],
+    "graph_libraries": [],
 }
 
 

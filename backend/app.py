@@ -15,6 +15,7 @@ from .schemas import (
     GraphRelationRuleListRequest,
     GraphRelationTypeListRequest,
     GraphTripleListRequest,
+    GraphLibraryBuildRequest,
     GraphVersionSyncRequest,
     KnowledgeSourceRequest,
     PromptAssetRequest,
@@ -223,12 +224,23 @@ def create_app() -> Flask:
     def list_graph_analysis_tasks():
         return jsonify({"items": graph_service.list_analysis_tasks()})
 
+    @app.get("/api/graph-builder/libraries")
+    def list_graph_libraries():
+        return jsonify({"items": graph_service.list_libraries()})
+
     @app.get("/api/graph-builder/analysis-tasks/<task_id>")
     def get_graph_analysis_task(task_id: str):
         task = graph_service.get_analysis_task(task_id)
         if not task:
             return jsonify({"detail": "分析任务不存在。"}), 404
         return jsonify({"item": task})
+
+    @app.delete("/api/graph-builder/analysis-tasks/<task_id>")
+    def delete_graph_analysis_task(task_id: str):
+        deleted = graph_service.delete_analysis_task(task_id)
+        if not deleted:
+            return jsonify({"detail": "????????"}), 404
+        return jsonify({"ok": True})
 
     @app.get("/api/graph-builder/analysis-tasks/<task_id>/triples-preview")
     def get_graph_analysis_task_triples_preview(task_id: str):
@@ -246,6 +258,13 @@ def create_app() -> Flask:
         if not task:
             return jsonify({"detail": "分析任务不存在。"}), 404
         return jsonify({"item": task})
+
+    @app.post("/api/graph-builder/libraries/build")
+    def build_graph_library():
+        payload = request.get_json(silent=True) or {}
+        build_request = GraphLibraryBuildRequest.model_validate(payload)
+        item = graph_service.build_library_version(build_request.model_dump())
+        return jsonify({"item": item}), 201
 
     @app.get("/api/graph-builder/neo4j/status")
     def get_graph_neo4j_status():

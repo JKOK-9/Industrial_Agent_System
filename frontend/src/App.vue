@@ -80,6 +80,26 @@ const neo4jStatus = ref({ configured: false, connected: false, database: "neo4j"
 const graphVisualization = ref({ version: null, nodes: [], relationships: [], metrics: null });
 const graphVisualizationLoading = ref(false);
 const graphVisualizationError = ref("");
+const graphViewport = reactive({ scale: 1, offsetX: 0, offsetY: 0 });
+const graphDragState = reactive({ mode: "", pointerId: null, startX: 0, startY: 0, originX: 0, originY: 0, nodeId: "" });
+const graphNodePositionOverrides = reactive({});
+const hoveredGraphNodeId = ref("");
+const selectedGraphNodeId = ref("");
+const graphTypeFilter = ref("all");
+const graphViewMode = ref("composite");
+const graphCanvasPanelRef = ref(null);
+const graphCanvasSvgRef = ref(null);
+const graphFullscreen = ref(false);
+const graphSyncState = reactive({
+  status: "idle",
+  syncedAt: "",
+  message: "尚未同步到 Neo4j",
+  nodeCount: 0,
+  edgeCount: 0,
+});
+const GRAPH_NODE_POINT_RADIUS = 22;
+const GRAPH_NODE_RING_RADIUS = 28;
+const GRAPH_NODE_ARROW_GAP = 8;
 let toastTimer = 0;
 let pollTimer = 0;
 
@@ -549,6 +569,7 @@ const graphLibraries = ref([
     ],
   },
 ]);
+const defaultGraphLibraries = JSON.parse(JSON.stringify(graphLibraries.value));
 
 const workflowForm = reactive({
   name: "",
@@ -592,6 +613,149 @@ const fusionSourceGraphs = computed(() =>
       .map((child) => ({ ...child, parent_name: item.name })),
   ),
 );
+
+const graphTypeFilterOptions = [
+  { value: "all", label: "全部" },
+  { value: "equipment", label: "设备" },
+  { value: "component", label: "部件" },
+  { value: "fault", label: "故障" },
+  { value: "process", label: "工艺步骤" },
+  { value: "faultChain", label: "只看故障链" },
+];
+
+const graphViewOptions = [
+  { value: "composite", label: "综合关系视图" },
+  { value: "fault", label: "故障链视图" },
+  { value: "structure", label: "结构视图" },
+  { value: "process", label: "工艺流程视图" },
+  { value: "parts", label: "零部件视图" },
+];
+
+function normalizeGraphNodeCategory(type = "", label = "") {
+  const text = `${type} ${label}`;
+  if (text.includes("设备") || text.includes("机组") || text.includes("核心")) return "equipment";
+  if (text.includes("部件") || text.includes("备件") || text.includes("物料") || text.includes("轴承")) return "component";
+  if (text.includes("故障") || text.includes("现象") || text.includes("原因") || text.includes("告警") || text.includes("异常")) return "fault";
+  if (text.includes("工艺") || text.includes("步骤") || text.includes("动作") || text.includes("检测") || text.includes("处置")) return "process";
+  return "other";
+}
+
+function getGraphShortLabel(label = "") {
+  return label.length > 7 ? `${label.slice(0, 6)}...` : label;
+}
+
+function getGraphCategoryLabel(category) {
+  return (
+    {
+      equipment: "设备",
+      component: "部件",
+      fault: "故障",
+      process: "工艺步骤",
+      other: "其他",
+    }[category] || "其他"
+  );
+}
+
+function getGraphViewLabel(viewMode) {
+  return graphViewOptions.find((item) => item.value === viewMode)?.label || "综合关系视图";
+}
+
+function layoutGraphNodes(nodes, width, height, viewMode, overrideMap) {
+  const palette = ["#2563eb", "#0f766e", "#b45309", "#7c3aed", "#be123c", "#0369a1", "#15803d"];
+  const typeColors = new Map();
+  const withColor = nodes.map((node) => {
+    if (!typeColors.has(node.type)) {
+      typeColors.set(node.type, palette[typeColors.size % palette.length]);
+    }
+    return { ...node, color: typeColors.get(node.type) };
+  });
+
+  if (viewMode === "composite") {
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const grouped = withColor.reduce((accumulator, node) => {
+      const key = node.type || "实体";
+      if (!accumulator.has(key)) accumulator.set(key, []);
+      accumulator.get(key).push(node);
+      return accumulator;
+    }, new Map());
+    const groups = Array.from(grouped.entries());
+    const clusterRadiusX = Math.min(480, width * 0.36);
+    const clusterRadiusY = Math.min(260, height * 0.3);
+    return groups.flatMap(([type, items], groupIndex) => {
+      const groupAngle = (Math.PI * 2 * groupIndex) / Math.max(groups.length, 1) - Math.PI / 2;
+      const clusterX = centerX + Math.cos(groupAngle) * clusterRadiusX;
+      const clusterY = centerY + Math.sin(groupAngle) * clusterRadiusY;
+      const localRadius = 64 + Math.min(126, items.length * 8);
+      return items.map((node, index) => {
+        const itemAngle = (Math.PI * 2 * index) / Math.max(items.length, 1) - Math.PI / 2;
+        const override = overrideMap[node.id];
+        return {
+          ...node,
+          x: override?.x ?? clusterX + Math.cos(itemAngle) * localRadius,
+          y: override?.y ?? clusterY + Math.sin(itemAngle) * localRadius,
+        };
+      });
+    });
+  }
+
+  const presets = {
+    fault: [
+      { category: "fault", x: 0.16, y: 0.5 },
+      { category: "component", x: 0.42, y: 0.52 },
+      { category: "process", x: 0.67, y: 0.52 },
+      { category: "equipment", x: 0.86, y: 0.45 },
+      { category: "other", x: 0.84, y: 0.8 },
+    ],
+    structure: [
+      { category: "equipment", x: 0.18, y: 0.5 },
+      { category: "component", x: 0.48, y: 0.48 },
+      { category: "fault", x: 0.8, y: 0.24 },
+      { category: "process", x: 0.8, y: 0.72 },
+      { category: "other", x: 0.56, y: 0.82 },
+    ],
+    process: [
+      { category: "equipment", x: 0.14, y: 0.38 },
+      { category: "process", x: 0.45, y: 0.48 },
+      { category: "component", x: 0.72, y: 0.38 },
+      { category: "fault", x: 0.84, y: 0.72 },
+      { category: "other", x: 0.58, y: 0.82 },
+    ],
+    parts: [
+      { category: "equipment", x: 0.18, y: 0.48 },
+      { category: "component", x: 0.48, y: 0.48 },
+      { category: "fault", x: 0.8, y: 0.28 },
+      { category: "process", x: 0.8, y: 0.72 },
+      { category: "other", x: 0.56, y: 0.84 },
+    ],
+  };
+
+  const preset = presets[viewMode] || presets.structure;
+  const grouped = new Map(preset.map((slot) => [slot.category, []]));
+  withColor.forEach((node) => {
+    const bucket = grouped.has(node.category) ? node.category : "other";
+    if (!grouped.has(bucket)) grouped.set(bucket, []);
+    grouped.get(bucket).push(node);
+  });
+
+  return preset.flatMap((slot, slotIndex) => {
+    const items = grouped.get(slot.category) || [];
+    const baseX = width * slot.x;
+    const baseY = height * slot.y;
+    const usableHeight = height - 180;
+    const gap = Math.min(94, Math.max(70, usableHeight / Math.max(items.length, 2)));
+    const startY = baseY - ((items.length - 1) * gap) / 2;
+    return items.map((node, index) => {
+      const override = overrideMap[node.id];
+      const wave = (slotIndex % 2 === 0 ? 1 : -1) * ((index % 2) * 18);
+      return {
+        ...node,
+        x: override?.x ?? baseX + wave,
+        y: override?.y ?? startY + index * gap,
+      };
+    });
+  });
+}
 const graphAlignmentPendingCount = computed(() => graphAlignmentPreview.value.filter((item) => item.decision === "待确认").length);
 const graphConflictHighCount = computed(() => graphConflictItems.value.filter((item) => item.severity === "高").length);
 const currentGraphLibrary = computed(() => graphLibraries.value.find((item) => item.id === selectedGraphLibraryId.value) || graphLibraries.value[0]);
@@ -600,46 +764,155 @@ const currentGraphVersion = computed(
 );
 const activeGraphSummary = computed(() => graphVisualization.value.version?.summary || currentGraphVersion.value?.summary || "请选择版本查看");
 const activeGraphMetrics = computed(() => graphVisualization.value.metrics || currentGraphVersion.value?.metrics || { entities: 0, relations: 0, sources: 0 });
-const graphCanvasModel = computed(() => {
-  const nodes = graphVisualization.value.nodes || [];
-  const relationships = graphVisualization.value.relationships || [];
-  const width = 860;
-  const height = 340;
-  const centerX = width / 2;
-  const centerY = height / 2;
-  const radiusX = Math.min(290, width * 0.33);
-  const radiusY = Math.min(118, height * 0.3);
-  const palette = ["#2563eb", "#0f766e", "#b45309", "#7c3aed", "#be123c", "#0369a1", "#15803d"];
-  const typeColors = new Map();
-  const positionedNodes = nodes.map((node, index) => {
-    const angle = (Math.PI * 2 * index) / Math.max(nodes.length, 1) - Math.PI / 2;
-    if (!typeColors.has(node.type)) {
-      typeColors.set(node.type, palette[typeColors.size % palette.length]);
-    }
-    return {
-      ...node,
-      x: centerX + Math.cos(angle) * radiusX,
-      y: centerY + Math.sin(angle) * radiusY,
-      color: typeColors.get(node.type),
-    };
+const graphFilteredData = computed(() => {
+  const nodes = (graphVisualization.value.nodes || []).map((node) => ({
+    ...node,
+    category: normalizeGraphNodeCategory(node.type, node.label),
+    shortLabel: getGraphShortLabel(node.label),
+  }));
+  let relationships = graphVisualization.value.relationships || [];
+  let workingNodes = nodes;
+
+  if (graphViewMode.value === "fault") {
+    workingNodes = workingNodes.filter((node) => ["fault", "component", "process", "equipment"].includes(node.category));
+  } else if (graphViewMode.value === "structure") {
+    workingNodes = workingNodes.filter((node) => ["equipment", "component", "fault", "process"].includes(node.category));
+  } else if (graphViewMode.value === "process") {
+    workingNodes = workingNodes.filter((node) => ["process", "equipment", "component", "fault"].includes(node.category));
+  } else if (graphViewMode.value === "parts") {
+    workingNodes = workingNodes.filter((node) => ["component", "equipment", "fault", "process"].includes(node.category));
+  }
+
+  if (graphTypeFilter.value === "faultChain") {
+    workingNodes = workingNodes.filter((node) => ["fault", "component", "process", "equipment"].includes(node.category));
+  } else if (graphTypeFilter.value !== "all") {
+    workingNodes = workingNodes.filter((node) => node.category === graphTypeFilter.value);
+  }
+
+  const visibleIds = new Set(workingNodes.map((node) => node.id));
+  relationships = relationships.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+
+  const usedIds = new Set();
+  relationships.forEach((edge) => {
+    usedIds.add(edge.source);
+    usedIds.add(edge.target);
   });
+  if (graphTypeFilter.value === "faultChain" || graphViewMode.value !== "composite") {
+    workingNodes = workingNodes.filter((node) => relationships.length === 0 || usedIds.has(node.id));
+  }
+
+  return { nodes: workingNodes, relationships };
+});
+const graphVisibleMetrics = computed(() => ({
+  entities: graphFilteredData.value.nodes.length,
+  relations: graphFilteredData.value.relationships.length,
+  sources: activeGraphMetrics.value.sources || 0,
+}));
+const graphCanvasModel = computed(() => {
+  const nodes = graphFilteredData.value.nodes;
+  const relationships = graphFilteredData.value.relationships;
+  const width = 1480;
+  const height = 760;
+  const overrideKey = `${selectedGraphLibraryId.value}:${selectedGraphVersionId.value}`;
+  if (!graphNodePositionOverrides[overrideKey]) {
+    graphNodePositionOverrides[overrideKey] = {};
+  }
+  const positionedNodes = layoutGraphNodes(nodes, width, height, graphViewMode.value, graphNodePositionOverrides[overrideKey]);
   const nodeMap = new Map(positionedNodes.map((node) => [node.id, node]));
   const positionedRelationships = relationships
     .map((edge, index) => {
       const sourceNode = nodeMap.get(edge.source);
       const targetNode = nodeMap.get(edge.target);
       if (!sourceNode || !targetNode) return null;
+      const dx = targetNode.x - sourceNode.x;
+      const dy = targetNode.y - sourceNode.y;
+      const distance = Math.hypot(dx, dy) || 1;
+      const unitX = dx / distance;
+      const unitY = dy / distance;
+      const x1 = sourceNode.x + unitX * (GRAPH_NODE_RING_RADIUS + 2);
+      const y1 = sourceNode.y + unitY * (GRAPH_NODE_RING_RADIUS + 2);
+      const x2 = targetNode.x - unitX * (GRAPH_NODE_RING_RADIUS + GRAPH_NODE_ARROW_GAP);
+      const y2 = targetNode.y - unitY * (GRAPH_NODE_RING_RADIUS + GRAPH_NODE_ARROW_GAP);
+      const normalX = -unitY;
+      const normalY = unitX;
+      const curveDirection = index % 2 === 0 ? 1 : -1;
+      const curveOffset = Math.min(34, Math.max(14, distance * 0.1)) * curveDirection;
+      const controlX = (x1 + x2) / 2 + normalX * curveOffset;
+      const controlY = (y1 + y2) / 2 + normalY * curveOffset;
+      const labelT = 0.5;
+      const labelOffset = 10 * curveDirection;
+      const midX =
+        (1 - labelT) * (1 - labelT) * x1 +
+        2 * (1 - labelT) * labelT * controlX +
+        labelT * labelT * x2 +
+        normalX * labelOffset;
+      const midY =
+        (1 - labelT) * (1 - labelT) * y1 +
+        2 * (1 - labelT) * labelT * controlY +
+        labelT * labelT * y2 +
+        normalY * labelOffset;
       return {
         ...edge,
         id: edge.id || `rel-${index + 1}`,
         sourceNode,
         targetNode,
-        midX: (sourceNode.x + targetNode.x) / 2,
-        midY: (sourceNode.y + targetNode.y) / 2,
+        x1,
+        y1,
+        x2,
+        y2,
+        controlX,
+        controlY,
+        midX,
+        midY,
+        path: `M ${x1} ${y1} Q ${controlX} ${controlY} ${x2} ${y2}`,
       };
     })
     .filter(Boolean);
   return { width, height, nodes: positionedNodes, relationships: positionedRelationships };
+});
+const selectedGraphNode = computed(() => graphCanvasModel.value.nodes.find((node) => node.id === selectedGraphNodeId.value) || null);
+const selectedGraphNodeRelationships = computed(() =>
+  graphCanvasModel.value.relationships.filter((edge) => edge.source === selectedGraphNodeId.value || edge.target === selectedGraphNodeId.value),
+);
+const selectedGraphNodeUpstream = computed(() =>
+  selectedGraphNodeRelationships.value.filter((edge) => edge.target === selectedGraphNodeId.value).map((edge) => edge.sourceNode.label),
+);
+const selectedGraphNodeDownstream = computed(() =>
+  selectedGraphNodeRelationships.value.filter((edge) => edge.source === selectedGraphNodeId.value).map((edge) => edge.targetNode.label),
+);
+const selectedGraphNodeAttributes = computed(() => {
+  if (!selectedGraphNode.value) return [];
+  const properties = selectedGraphNode.value.properties || {};
+  return [
+    { label: "型号", value: properties.model || properties["型号"] || currentGraphLibrary.value?.domain || "未标注" },
+    { label: "编号", value: properties.code || properties["编号"] || selectedGraphNode.value.id },
+    { label: "所属系统", value: properties.system || properties["所属系统"] || currentGraphLibrary.value?.name || "当前知识库" },
+    { label: "来源文件", value: properties.source_file || properties["来源文件"] || currentGraphLibrary.value?.source || "Neo4j 同步版本" },
+  ];
+});
+const selectedGraphNodeActions = computed(() => {
+  if (!selectedGraphNode.value) return [];
+  switch (selectedGraphNode.value.category) {
+    case "fault":
+      return ["查看故障链", "查看维修方案", "定位来源数据"];
+    case "equipment":
+      return ["查看结构视图", "查看关联故障", "定位来源数据"];
+    case "component":
+      return ["查看零部件视图", "查看装配关系", "定位来源数据"];
+    case "process":
+      return ["查看工艺流程", "查看上下游步骤", "定位来源数据"];
+    default:
+      return ["查看关联节点", "定位来源数据"];
+  }
+});
+const graphSyncSummary = computed(() => {
+  if (graphSyncState.status === "success") {
+    return `已同步：${graphSyncState.syncedAt || "刚刚"} · Neo4j 节点 ${graphSyncState.nodeCount}，关系 ${graphSyncState.edgeCount}`;
+  }
+  if (graphSyncState.status === "error") {
+    return `同步失败：${graphSyncState.message}`;
+  }
+  return graphSyncState.message;
 });
 const latestGraphLibraries = computed(() => [...graphLibraries.value].sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 4));
 const selectedWorkflowNode = computed(() => workflowForm.nodes.find((node) => node.id === selectedWorkflowNodeId.value));
@@ -726,6 +999,53 @@ function onCreateSourceFilesChange(event) {
 
 function onCreateImageFilesChange(event) {
   createImageFiles.value = Array.from(event.target.files || []);
+}
+
+function resetGraphAnalysisPreview() {
+  graphAnalysisTaskId.value = "";
+  graphAnalysisTasks.value = [];
+  graphTriplePreviewItems.value = [];
+  graphRawHeaders.value = [];
+  graphSampleRows.value = [];
+  graphModelNodeSuggestions.value = [];
+  graphModelRelationSuggestions.value = [];
+  graphHeaderConfirmations.value = [];
+}
+
+async function deleteGraphAnalysisTask(taskId) {
+  try {
+    await fetchJSON(`/api/graph-builder/analysis-tasks/${taskId}`, { method: "DELETE" });
+    graphAnalysisTasks.value = graphAnalysisTasks.value.filter((item) => item.id !== taskId);
+    if (graphAnalysisTaskId.value === taskId) {
+      resetGraphAnalysisPreview();
+    }
+    showToast("分析任务已删除");
+  } catch (error) {
+    showToast(error.message || "删除分析任务失败");
+  }
+}
+
+function removeCreateSourceFile(index) {
+  createSourceFiles.value = createSourceFiles.value.filter((_, itemIndex) => itemIndex !== index);
+  if (!createSourceFiles.value.length) {
+    resetGraphAnalysisPreview();
+    const sourceInput = document.getElementById("graph-source-file");
+    if (sourceInput) sourceInput.value = "";
+  }
+}
+
+function removeCreateImageFile(index) {
+  createImageFiles.value = createImageFiles.value.filter((_, itemIndex) => itemIndex !== index);
+}
+
+function clearCreateUploads() {
+  createSourceFiles.value = [];
+  createImageFiles.value = [];
+  resetGraphAnalysisPreview();
+  const sourceInput = document.getElementById("graph-source-file");
+  const imageInput = document.getElementById("graph-image-file");
+  if (sourceInput) sourceInput.value = "";
+  if (imageInput) imageInput.value = "";
 }
 
 async function analyzeGraphTable(file) {
@@ -845,6 +1165,7 @@ async function loadGraphBuilderConfig() {
   }
 
   syncGraphBuilderForms();
+  await loadGraphLibraries();
   graphBuilderLoaded.value = true;
 }
 
@@ -874,7 +1195,25 @@ function syncGraphBuilderForms() {
   }
 }
 
-function submitGraphCreate() {
+async function loadGraphLibraries() {
+  const payload = await fetchJSON("/api/graph-builder/libraries");
+  const dynamicLibraries = Array.isArray(payload.items) ? payload.items : [];
+  const merged = [...dynamicLibraries];
+  const usedIds = new Set(dynamicLibraries.map((item) => item.id));
+  const usedNames = new Set(dynamicLibraries.map((item) => item.name));
+  defaultGraphLibraries.forEach((item) => {
+    if (!usedIds.has(item.id) && !usedNames.has(item.name)) {
+      merged.push(JSON.parse(JSON.stringify(item)));
+    }
+  });
+  graphLibraries.value = merged;
+  if (!graphLibraries.value.some((item) => item.id === selectedGraphLibraryId.value)) {
+    selectedGraphLibraryId.value = graphLibraries.value[0]?.id || "";
+    selectedGraphVersionId.value = graphLibraries.value[0]?.versions?.[0]?.id || "";
+  }
+}
+
+async function submitGraphCreate() {
   if (!graphCreateForm.name.trim()) {
     showToast("请填写知识库名称");
     return;
@@ -883,7 +1222,36 @@ function submitGraphCreate() {
     showToast("请至少上传文档、表格或图片中的一种来源");
     return;
   }
-  showToast("知识图谱构建任务已创建");
+  if (!graphAnalysisTaskId.value) {
+    showToast("请先上传并解析表格，生成分析任务后再开始构建");
+    return;
+  }
+  const sourceTypes = [];
+  if (createSourceFiles.value.length) sourceTypes.push("表格");
+  if (createImageFiles.value.length) sourceTypes.push("图片");
+  if (!sourceTypes.length) sourceTypes.push("文档");
+  try {
+    const payload = await fetchJSON("/api/graph-builder/libraries/build", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        task_id: graphAnalysisTaskId.value,
+        knowledge_base_name: graphCreateForm.name,
+        business_domain: graphCreateForm.businessDomain,
+        layer_strategy: graphCreateForm.layerStrategy,
+        description: graphCreateForm.description,
+        source_types: sourceTypes,
+      }),
+    });
+    await loadGraphLibraries();
+    selectedGraphLibraryId.value = payload.item.id;
+    selectedGraphVersionId.value = payload.item.versions?.[0]?.id || "";
+    clearCreateUploads();
+    currentPage.value = "graphVersions";
+    showToast("知识图谱版本已生成，可在版本管理中查看并同步到 Neo4j");
+  } catch (error) {
+    showToast(error.message || "知识图谱构建失败");
+  }
 }
 
 async function addGraphHeaderConfirmation() {
@@ -1141,6 +1509,11 @@ async function loadGraphVisualization() {
   }
   graphVisualizationLoading.value = true;
   graphVisualizationError.value = "";
+  selectedGraphNodeId.value = "";
+  hoveredGraphNodeId.value = "";
+  graphViewport.scale = 1;
+  graphViewport.offsetX = 0;
+  graphViewport.offsetY = 0;
   try {
     const payload = await fetchJSON(`/api/graph-builder/versions/${selectedGraphLibraryId.value}/${selectedGraphVersionId.value}/visualization`);
     graphVisualization.value = {
@@ -1157,17 +1530,136 @@ async function loadGraphVisualization() {
   }
 }
 
+function handleGraphWheel(event) {
+  event.preventDefault();
+  const direction = event.deltaY > 0 ? -0.12 : 0.12;
+  graphViewport.scale = Math.min(2.4, Math.max(0.55, Number((graphViewport.scale + direction).toFixed(2))));
+}
+
+function beginGraphPan(event) {
+  if (event.target.closest(".graph-node-hitbox")) return;
+  event.preventDefault();
+  graphDragState.mode = "pan";
+  graphDragState.pointerId = event.pointerId;
+  graphDragState.startX = event.clientX;
+  graphDragState.startY = event.clientY;
+  graphDragState.originX = graphViewport.offsetX;
+  graphDragState.originY = graphViewport.offsetY;
+}
+
+function beginGraphNodeDrag(event, nodeId) {
+  event.preventDefault();
+  event.stopPropagation();
+  const overrideKey = `${selectedGraphLibraryId.value}:${selectedGraphVersionId.value}`;
+  const node = graphCanvasModel.value.nodes.find((item) => item.id === nodeId);
+  if (!node) return;
+  graphDragState.mode = "node";
+  graphDragState.pointerId = event.pointerId;
+  graphDragState.nodeId = nodeId;
+  graphDragState.startX = event.clientX;
+  graphDragState.startY = event.clientY;
+  graphDragState.originX = node.x;
+  graphDragState.originY = node.y;
+  selectedGraphNodeId.value = nodeId;
+  if (!graphNodePositionOverrides[overrideKey]) {
+    graphNodePositionOverrides[overrideKey] = {};
+  }
+}
+
+function handleGraphPointerMove(event) {
+  if (!graphDragState.mode || graphDragState.pointerId !== event.pointerId) return;
+  if (graphDragState.mode === "pan") {
+    graphViewport.offsetX = graphDragState.originX + (event.clientX - graphDragState.startX);
+    graphViewport.offsetY = graphDragState.originY + (event.clientY - graphDragState.startY);
+    return;
+  }
+  if (graphDragState.mode === "node") {
+    const overrideKey = `${selectedGraphLibraryId.value}:${selectedGraphVersionId.value}`;
+    const dx = (event.clientX - graphDragState.startX) / graphViewport.scale;
+    const dy = (event.clientY - graphDragState.startY) / graphViewport.scale;
+    graphNodePositionOverrides[overrideKey][graphDragState.nodeId] = {
+      x: graphDragState.originX + dx,
+      y: graphDragState.originY + dy,
+    };
+  }
+}
+
+function handleGraphPointerUp(event) {
+  if (graphDragState.pointerId !== event.pointerId) return;
+  graphDragState.mode = "";
+  graphDragState.pointerId = null;
+  graphDragState.nodeId = "";
+}
+
+function syncGraphFullscreenState() {
+  graphFullscreen.value = Boolean(document.fullscreenElement && graphCanvasPanelRef.value?.contains(document.fullscreenElement));
+}
+
+async function toggleGraphFullscreen() {
+  try {
+    if (!graphCanvasPanelRef.value) return;
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+    } else {
+      await graphCanvasPanelRef.value.requestFullscreen();
+    }
+  } catch (error) {
+    showToast(error.message || "全屏查看暂时不可用");
+  }
+}
+
+async function exportGraphImage() {
+  if (!graphCanvasSvgRef.value) {
+    showToast("当前没有可导出的图谱");
+    return;
+  }
+  const serializer = new XMLSerializer();
+  let source = serializer.serializeToString(graphCanvasSvgRef.value);
+  if (!source.includes('xmlns="http://www.w3.org/2000/svg"')) {
+    source = source.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+  const svgBlob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
+  const svgUrl = URL.createObjectURL(svgBlob);
+  const image = new Image();
+  image.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(graphCanvasModel.value.width * 1.5);
+    canvas.height = Math.round(graphCanvasModel.value.height * 1.5);
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#fbfcff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(svgUrl);
+    const link = document.createElement("a");
+    link.href = canvas.toDataURL("image/png");
+    link.download = `${currentGraphLibrary.value?.name || "knowledge-graph"}-${currentGraphVersion.value?.label || "version"}.png`;
+    link.click();
+  };
+  image.onerror = () => {
+    URL.revokeObjectURL(svgUrl);
+    showToast("导出图片失败");
+  };
+  image.src = svgUrl;
+}
+
 async function syncCurrentVersionToNeo4j() {
   try {
     const payload = buildGraphVersionSyncPayload();
-    await fetchJSON("/api/graph-builder/versions/sync", {
+    const result = await fetchJSON("/api/graph-builder/versions/sync", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    graphSyncState.status = "success";
+    graphSyncState.syncedAt = new Date().toLocaleString("zh-CN", { hour12: false });
+    graphSyncState.message = "同步成功";
+    graphSyncState.nodeCount = result.node_count || payload.nodes.length;
+    graphSyncState.edgeCount = result.edge_count || payload.edges.length;
     showToast("当前版本已同步到 Neo4j");
     await Promise.all([loadNeo4jStatus(), loadGraphVisualization()]);
   } catch (error) {
+    graphSyncState.status = "error";
+    graphSyncState.message = error.message || "Neo4j 连接异常";
     showToast(error.message || "同步到 Neo4j 失败");
   }
 }
@@ -1776,11 +2268,17 @@ onMounted(() => {
   pollTimer = window.setInterval(() => {
     refreshAll().catch(() => {});
   }, 5000);
+  window.addEventListener("pointermove", handleGraphPointerMove);
+  window.addEventListener("pointerup", handleGraphPointerUp);
+  document.addEventListener("fullscreenchange", syncGraphFullscreenState);
 });
 
 onUnmounted(() => {
   window.clearInterval(pollTimer);
   window.clearTimeout(toastTimer);
+  window.removeEventListener("pointermove", handleGraphPointerMove);
+  window.removeEventListener("pointerup", handleGraphPointerUp);
+  document.removeEventListener("fullscreenchange", syncGraphFullscreenState);
 });
 </script>
 
@@ -2692,12 +3190,12 @@ onUnmounted(() => {
 
                 <div class="graph-upload-grid">
                   <label class="upload-field graph-upload-field">
-                    <input type="file" multiple accept=".pdf,.doc,.docx,.txt,.md,.xls,.xlsx,.csv" @change="onCreateSourceFilesChange" />
+                    <input id="graph-source-file" type="file" multiple accept=".pdf,.doc,.docx,.txt,.md,.xls,.xlsx,.csv" @change="onCreateSourceFilesChange" />
                     <FileUp />
                     <span>上传文档与表格</span>
                   </label>
                   <label class="upload-field graph-upload-field">
-                    <input type="file" multiple accept=".png,.jpg,.jpeg,.bmp" @change="onCreateImageFilesChange" />
+                    <input id="graph-image-file" type="file" multiple accept=".png,.jpg,.jpeg,.bmp" @change="onCreateImageFilesChange" />
                     <FileUp />
                     <span>上传图片资料</span>
                   </label>
@@ -2706,11 +3204,23 @@ onUnmounted(() => {
                 <div class="graph-file-summary">
                   <div>
                     <strong>已选结构化 / 非结构化文件</strong>
-                    <small>{{ createSourceFiles.length ? createSourceFiles.map((item) => item.name).join("、") : "暂无文件" }}</small>
+                    <div v-if="createSourceFiles.length" class="graph-file-list">
+                      <div v-for="(item, index) in createSourceFiles" :key="`${item.name}-${index}`" class="graph-file-item">
+                        <small>{{ item.name }}</small>
+                        <button class="text-button danger-text" type="button" @click="removeCreateSourceFile(index)">删除</button>
+                      </div>
+                    </div>
+                    <small v-else>暂无文件</small>
                   </div>
                   <div>
                     <strong>已选图片</strong>
-                    <small>{{ createImageFiles.length ? createImageFiles.map((item) => item.name).join("、") : "暂无图片" }}</small>
+                    <div v-if="createImageFiles.length" class="graph-file-list">
+                      <div v-for="(item, index) in createImageFiles" :key="`${item.name}-${index}`" class="graph-file-item">
+                        <small>{{ item.name }}</small>
+                        <button class="text-button danger-text" type="button" @click="removeCreateImageFile(index)">删除</button>
+                      </div>
+                    </div>
+                    <small v-else>暂无图片</small>
                   </div>
                 </div>
 
@@ -2735,6 +3245,7 @@ onUnmounted(() => {
                       <div class="graph-schema-actions">
                         <span class="tag" :class="item.status === '已确认' ? 'success' : 'danger'">{{ item.status }}</span>
                         <span class="tag">{{ formatDate(item.updated_at) }}</span>
+                        <button class="text-button danger-text" type="button" @click.stop="deleteGraphAnalysisTask(item.id)">删除</button>
                       </div>
                     </button>
                     <div v-if="!graphAnalysisTasks.length" class="empty-state">上传 CSV / Excel 后会自动生成分析任务记录</div>
@@ -3278,16 +3789,55 @@ onUnmounted(() => {
                     <small>{{ formatDate(version.updated_at) }}</small>
                   </button>
                 </div>
-                <div class="graph-visual-panel">
+                <div ref="graphCanvasPanelRef" class="graph-visual-panel" :class="{ fullscreen: graphFullscreen }">
                   <div class="graph-visual-summary">
                     <div>
                       <strong>{{ currentGraphLibrary?.name || "-" }}</strong>
                       <small>{{ activeGraphSummary }}</small>
                     </div>
                     <div class="graph-chip-row">
-                      <span class="tag processing">实体 {{ activeGraphMetrics.entities || 0 }}</span>
-                      <span class="tag">关系 {{ activeGraphMetrics.relations || 0 }}</span>
-                      <span class="tag">来源 {{ activeGraphMetrics.sources || 0 }}</span>
+                      <span class="tag processing">实体 {{ graphVisibleMetrics.entities || 0 }}</span>
+                      <span class="tag">关系 {{ graphVisibleMetrics.relations || 0 }}</span>
+                      <span class="tag">来源 {{ graphVisibleMetrics.sources || 0 }}</span>
+                      <span class="tag">{{ getGraphViewLabel(graphViewMode) }}</span>
+                    </div>
+                  </div>
+
+                  <div class="graph-sync-banner" :class="graphSyncState.status">
+                    <strong>同步状态</strong>
+                    <small>{{ graphSyncSummary }}</small>
+                  </div>
+
+                  <div class="graph-filter-bar">
+                    <div class="graph-filter-group">
+                      <strong>筛选图层</strong>
+                      <div class="graph-filter-chips">
+                        <button
+                          v-for="item in graphTypeFilterOptions"
+                          :key="item.value"
+                          class="graph-filter-chip"
+                          :class="{ active: graphTypeFilter === item.value }"
+                          type="button"
+                          @click="graphTypeFilter = item.value"
+                        >
+                          {{ item.label }}
+                        </button>
+                      </div>
+                    </div>
+                    <div class="graph-filter-group">
+                      <strong>专业视图</strong>
+                      <div class="graph-filter-chips">
+                        <button
+                          v-for="item in graphViewOptions"
+                          :key="item.value"
+                          class="graph-filter-chip"
+                          :class="{ active: graphViewMode === item.value }"
+                          type="button"
+                          @click="graphViewMode = item.value"
+                        >
+                          {{ item.label }}
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -3298,44 +3848,125 @@ onUnmounted(() => {
                       <small>{{ graphVisualizationError }}</small>
                     </div>
                     <div v-else-if="!graphCanvasModel.nodes.length" class="graph-canvas-empty">
-                      <strong>当前版本在 Neo4j 中还没有图谱数据</strong>
-                      <small>点击“同步到 Neo4j”后，可在这里查看点对点关系图。</small>
+                      <strong>当前视图下没有可展示的图谱数据</strong>
+                      <small>可以切换筛选条件，或点击“同步到 Neo4j”后再查看。</small>
                     </div>
-                    <div v-else class="graph-canvas-stage">
-                      <svg class="graph-canvas-svg" :viewBox="`0 0 ${graphCanvasModel.width} ${graphCanvasModel.height}`" aria-label="知识图谱可视化">
+                    <div v-else class="graph-canvas-stage" @wheel="handleGraphWheel" @pointerdown="beginGraphPan">
+                      <div class="graph-canvas-toolbar">
+                        <button class="text-button" type="button" @click="graphViewport.scale = Math.max(0.55, Number((graphViewport.scale - 0.12).toFixed(2)))">缩小</button>
+                        <span class="tag">{{ Math.round(graphViewport.scale * 100) }}%</span>
+                        <button class="text-button" type="button" @click="graphViewport.scale = Math.min(2.4, Number((graphViewport.scale + 0.12).toFixed(2)))">放大</button>
+                        <button class="text-button" type="button" @click="graphViewport.scale = 1; graphViewport.offsetX = 0; graphViewport.offsetY = 0">重置视图</button>
+                        <button class="text-button" type="button" @click="toggleGraphFullscreen">{{ graphFullscreen ? "退出全屏" : "全屏查看" }}</button>
+                        <button class="text-button" type="button" @click="exportGraphImage">导出图片</button>
+                      </div>
+                      <svg ref="graphCanvasSvgRef" class="graph-canvas-svg" :viewBox="`0 0 ${graphCanvasModel.width} ${graphCanvasModel.height}`" aria-label="知识图谱可视化">
                         <defs>
-                          <marker id="graph-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
-                            <path d="M0,0 L10,5 L0,10 z" fill="#7a8aa0" />
+                          <marker id="graph-arrow" markerWidth="9" markerHeight="9" refX="7.2" refY="4.5" orient="auto" markerUnits="strokeWidth">
+                            <path d="M0,0 L9,4.5 L0,9 z" fill="#4b6386" />
                           </marker>
                         </defs>
-                        <line
-                          v-for="edge in graphCanvasModel.relationships"
-                          :key="edge.id"
-                          class="graph-link-line"
-                          :x1="edge.sourceNode.x"
-                          :y1="edge.sourceNode.y"
-                          :x2="edge.targetNode.x"
-                          :y2="edge.targetNode.y"
-                          marker-end="url(#graph-arrow)"
-                        />
-                        <g v-for="edge in graphCanvasModel.relationships" :key="`${edge.id}-label`">
-                          <rect class="graph-link-pill" :x="edge.midX - 26" :y="edge.midY - 12" width="52" height="20" rx="10" />
-                          <text class="graph-link-text" :x="edge.midX" :y="edge.midY + 4">{{ edge.relation }}</text>
-                        </g>
-                        <g v-for="node in graphCanvasModel.nodes" :key="node.id">
-                          <circle class="graph-node-point" :cx="node.x" :cy="node.y" r="22" :fill="node.color" />
-                          <circle class="graph-node-ring" :cx="node.x" :cy="node.y" r="28" :stroke="node.color" />
-                          <text class="graph-node-title" :x="node.x" :y="node.y - 34">{{ node.label }}</text>
-                          <text class="graph-node-type" :x="node.x" :y="node.y + 5">{{ node.type }}</text>
+                        <g :transform="`translate(${graphViewport.offsetX} ${graphViewport.offsetY}) scale(${graphViewport.scale})`">
+                          <path
+                            v-for="edge in graphCanvasModel.relationships"
+                            :key="edge.id"
+                            class="graph-link-line"
+                            :d="edge.path"
+                            marker-end="url(#graph-arrow)"
+                          />
+                          <g v-if="graphViewport.scale >= 1.05" v-for="edge in graphCanvasModel.relationships" :key="`${edge.id}-label`">
+                            <rect class="graph-link-pill" :x="edge.midX - 24" :y="edge.midY - 10" width="48" height="18" rx="9" />
+                            <text class="graph-link-text" :x="edge.midX" :y="edge.midY + 3.5">{{ edge.relation }}</text>
+                          </g>
+                          <g
+                            v-for="node in graphCanvasModel.nodes"
+                            :key="node.id"
+                            class="graph-node-group"
+                            @mouseenter="hoveredGraphNodeId = node.id"
+                            @mouseleave="hoveredGraphNodeId = ''"
+                          >
+                            <title>{{ node.label }}</title>
+                            <circle
+                              class="graph-node-hitbox"
+                              :cx="node.x"
+                              :cy="node.y"
+                              :r="GRAPH_NODE_RING_RADIUS + 4"
+                              fill="transparent"
+                              @pointerdown="beginGraphNodeDrag($event, node.id)"
+                              @click.stop="selectedGraphNodeId = node.id"
+                            />
+                            <circle class="graph-node-point" :cx="node.x" :cy="node.y" :r="GRAPH_NODE_POINT_RADIUS" :fill="node.color" />
+                            <circle class="graph-node-ring" :cx="node.x" :cy="node.y" :r="GRAPH_NODE_RING_RADIUS" :stroke="node.color" />
+                            <text
+                              v-if="selectedGraphNodeId === node.id || hoveredGraphNodeId === node.id"
+                              class="graph-node-title active"
+                              :x="node.x"
+                              :y="node.y - 34"
+                            >{{ node.label }}</text>
+                            <text
+                              v-else-if="graphViewport.scale >= 1.5"
+                              class="graph-node-title"
+                              :x="node.x"
+                              :y="node.y - 34"
+                            >{{ node.shortLabel }}</text>
+                            <text class="graph-node-type" :x="node.x" :y="node.y + 5">{{ getGraphCategoryLabel(node.category) }}</text>
+                          </g>
                         </g>
                       </svg>
                     </div>
                   </div>
 
-                  <div class="graph-edge-list">
-                    <strong>关系链路</strong>
-                    <div v-for="edge in graphVisualization.relationships || []" :key="edge.id || `${edge.source}-${edge.target}-${edge.relation}`">
-                      <small>{{ edge.source }} -> {{ edge.relation }} -> {{ edge.target }}</small>
+                  <div class="graph-detail-panels">
+                    <div class="graph-edge-list">
+                      <strong>节点详情</strong>
+                      <div v-if="selectedGraphNode" class="graph-node-detail-card">
+                        <div>
+                          <span class="tag processing">节点名称</span>
+                          <p>{{ selectedGraphNode.label }}</p>
+                        </div>
+                        <div class="graph-node-detail-grid">
+                          <div>
+                            <span class="tag">节点类型</span>
+                            <small>{{ selectedGraphNode.type }} / {{ getGraphCategoryLabel(selectedGraphNode.category) }}</small>
+                          </div>
+                          <div>
+                            <span class="tag">节点坐标</span>
+                            <small>{{ Math.round(selectedGraphNode.x) }}, {{ Math.round(selectedGraphNode.y) }}</small>
+                          </div>
+                        </div>
+                        <div class="graph-node-attribute-grid">
+                          <div v-for="item in selectedGraphNodeAttributes" :key="item.label" class="graph-node-attribute-item">
+                            <span>{{ item.label }}</span>
+                            <strong>{{ item.value }}</strong>
+                          </div>
+                        </div>
+                        <div class="graph-node-relation-grid">
+                          <div>
+                            <span class="tag">上游节点</span>
+                            <small>{{ selectedGraphNodeUpstream.length ? selectedGraphNodeUpstream.join('、') : '暂无' }}</small>
+                          </div>
+                          <div>
+                            <span class="tag">下游节点</span>
+                            <small>{{ selectedGraphNodeDownstream.length ? selectedGraphNodeDownstream.join('、') : '暂无' }}</small>
+                          </div>
+                        </div>
+                        <div>
+                          <span class="tag">推荐操作</span>
+                          <div class="graph-filter-chips actions">
+                            <span v-for="action in selectedGraphNodeActions" :key="action" class="graph-filter-chip static">{{ action }}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div v-else class="graph-node-detail-empty">
+                        <small>点击图谱中的任意节点，可查看名称、类型、属性、上下游关系和推荐操作。</small>
+                      </div>
+                    </div>
+
+                    <div class="graph-edge-list">
+                      <strong>关系链路</strong>
+                      <div v-for="edge in (selectedGraphNode ? selectedGraphNodeRelationships : graphCanvasModel.relationships)" :key="edge.id || `${edge.source}-${edge.target}-${edge.relation}`">
+                        <small>{{ edge.sourceNode.label }} -> {{ edge.relation }} -> {{ edge.targetNode.label }}</small>
+                      </div>
                     </div>
                   </div>
                 </div>
