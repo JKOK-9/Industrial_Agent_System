@@ -43,6 +43,8 @@ class TrainingService:
             raise ValueError("基座模型不存在。")
         if base_model.get("status") != "ready":
             raise ValueError("基座模型尚未 ready。")
+        if base_model.get("source") == "api":
+            raise ValueError("API 接入模型不能作为微调训练的基座模型。")
 
         job_id = uuid.uuid4().hex
         safe_output_name = safe_name(request.output_name)

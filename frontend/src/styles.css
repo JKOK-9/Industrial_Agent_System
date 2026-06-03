@@ -1157,11 +1157,15 @@ textarea:focus {
   display: grid;
   grid-template-columns: minmax(220px, 360px) minmax(0, 1fr);
   gap: 18px;
-  align-items: end;
+  align-items: start;
   padding: 16px;
   background:
     linear-gradient(110deg, rgba(229, 241, 255, 0.95), rgba(255, 255, 255, 0.98)),
     #ffffff;
+}
+
+.download-hero > div:first-child {
+  padding-top: 10px;
 }
 
 .download-hero h2 {
@@ -1172,9 +1176,13 @@ textarea:focus {
 
 .download-form {
   display: grid;
-  grid-template-columns: repeat(4, minmax(150px, 1fr)) auto;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   align-items: end;
   gap: 12px;
+}
+
+.download-form .primary-button {
+  min-height: 42px;
 }
 
 .base-grid {

@@ -74,6 +74,9 @@ const downloadForm = reactive({
   source: "modelscope",
   model_id: "",
   local_path: "",
+  api_base_url: "",
+  api_key: "",
+  api_model: "",
 });
 
 const trainingForm = reactive({
@@ -133,6 +136,7 @@ const ragFileName = computed(() => ragFile.value?.name || "选择 TXT / MD / JSO
 const knowledgeFileName = computed(() => knowledgeFile.value?.name || "选择知识源文件");
 const promptFileName = computed(() => promptFile.value?.name || "可选：上传 .txt 提示词文件");
 const readyBaseModels = computed(() => baseModels.value.filter((model) => model.status === "ready"));
+const trainableBaseModels = computed(() => readyBaseModels.value.filter((model) => model.source !== "api"));
 const selectedJob = computed(() => trainingJobs.value.find((job) => job.id === selectedJobId.value));
 const latestDownloadJobs = computed(() => downloadJobs.value.slice(0, 4));
 const latestTrainingJobs = computed(() => trainingJobs.value.slice(0, 5));
@@ -230,8 +234,14 @@ async function refreshAll() {
 async function loadBaseModels() {
   const payload = await fetchJSON("/api/models/base");
   baseModels.value = payload.items || [];
-  if (!trainingForm.model_id && readyBaseModels.value.length) {
-    trainingForm.model_id = readyBaseModels.value[0].id;
+  if (trainingForm.model_id && !trainableBaseModels.value.some((model) => model.id === trainingForm.model_id)) {
+    trainingForm.model_id = trainableBaseModels.value[0]?.id || "";
+  }
+  if (!trainingForm.model_id && trainableBaseModels.value.length) {
+    trainingForm.model_id = trainableBaseModels.value[0].id;
+  }
+  if (ragForm.model_id && !readyBaseModels.value.some((model) => model.id === ragForm.model_id)) {
+    ragForm.model_id = readyBaseModels.value[0]?.id || "";
   }
   if (!ragForm.model_id && readyBaseModels.value.length) {
     ragForm.model_id = readyBaseModels.value[0].id;
@@ -292,6 +302,9 @@ async function submitDownload() {
     source: downloadForm.source,
     model_id: downloadForm.model_id,
     local_path: downloadForm.source === "local" ? downloadForm.local_path : null,
+    api_base_url: downloadForm.source === "api" ? downloadForm.api_base_url : null,
+    api_key: downloadForm.source === "api" ? downloadForm.api_key : null,
+    api_model: downloadForm.source === "api" ? downloadForm.api_model || downloadForm.model_id : null,
   };
   await fetchJSON("/api/models/base/download", {
     method: "POST",
@@ -303,6 +316,9 @@ async function submitDownload() {
     source: "modelscope",
     model_id: "",
     local_path: "",
+    api_base_url: "",
+    api_key: "",
+    api_model: "",
   });
   showToast("基座模型任务已提交");
   await refreshAll();
@@ -396,7 +412,7 @@ function createWorkflowNode(type) {
     },
     finetuned: {
       fine_tuned_model_id: trainableFineTunedModels.value[0]?.id || "",
-      model_id: readyBaseModels.value[0]?.id || "",
+      model_id: trainableBaseModels.value[0]?.id || "",
       prompt_asset_id: "",
       prompt: "",
       filter_thinking: true,
@@ -882,6 +898,25 @@ function methodText(model) {
   return model.training_method || "-";
 }
 
+function sourceText(source) {
+  const map = {
+    modelscope: "ModelScope",
+    huggingface: "Hugging Face",
+    local: "本地模型",
+    api: "API接入",
+  };
+  return map[source] || source || "-";
+}
+
+function modelLocation(model) {
+  if (model.source === "api") {
+    const apiModel = model.api_model || model.api_config?.model || model.model_id;
+    const apiBaseUrl = model.api_base_url || model.api_config?.base_url || "";
+    return apiBaseUrl ? `${apiBaseUrl} · ${apiModel}` : apiModel;
+  }
+  return model.path || "-";
+}
+
 function formatSize(value) {
   if (!value) return "-";
   if (value < 1024) return `${value} B`;
@@ -1050,7 +1085,7 @@ onUnmounted(() => {
                     <span>基座模型</span>
                     <select v-model="trainingForm.model_id" required>
                       <option value="">请选择</option>
-                      <option v-for="model in readyBaseModels" :key="model.id" :value="model.id">
+                      <option v-for="model in trainableBaseModels" :key="model.id" :value="model.id">
                         {{ model.display_name }}
                       </option>
                     </select>
@@ -1453,7 +1488,7 @@ onUnmounted(() => {
                     <span>基座模型</span>
                     <select v-model="selectedWorkflowNode.config.model_id">
                       <option value="">请选择基座模型</option>
-                      <option v-for="model in readyBaseModels" :key="model.id" :value="model.id">
+                      <option v-for="model in trainableBaseModels" :key="model.id" :value="model.id">
                         {{ model.display_name }}
                       </option>
                     </select>
@@ -1890,19 +1925,36 @@ onUnmounted(() => {
                   <option value="modelscope">ModelScope</option>
                   <option value="huggingface">Hugging Face</option>
                   <option value="local">本地路径</option>
+                  <option value="api">API接入</option>
                 </select>
               </label>
               <label>
                 <span>模型 ID</span>
-                <input v-model="downloadForm.model_id" required placeholder="Qwen/Qwen3-4B" />
+                <input
+                  v-model="downloadForm.model_id"
+                  required
+                  :placeholder="downloadForm.source === 'api' ? 'qwen-plus / gpt-4o-mini' : 'Qwen/Qwen3-4B'"
+                />
               </label>
               <label v-if="downloadForm.source === 'local'">
                 <span>本地路径</span>
                 <input v-model="downloadForm.local_path" required placeholder="D:\\Models\\Qwen3-4B" />
               </label>
+              <label v-if="downloadForm.source === 'api'">
+                <span>API 地址</span>
+                <input v-model="downloadForm.api_base_url" required placeholder="https://api.example.com/v1" />
+              </label>
+              <label v-if="downloadForm.source === 'api'">
+                <span>API Key</span>
+                <input v-model="downloadForm.api_key" type="password" autocomplete="new-password" placeholder="可选，本地服务可留空" />
+              </label>
+              <label v-if="downloadForm.source === 'api'">
+                <span>服务模型名</span>
+                <input v-model="downloadForm.api_model" placeholder="默认使用模型 ID" />
+              </label>
               <button class="primary-button" type="submit">
                 <Download />
-                <span>提交下载</span>
+                <span>{{ downloadForm.source === "api" ? "接入 API" : downloadForm.source === "local" ? "登记模型" : "提交下载" }}</span>
               </button>
             </form>
           </section>
@@ -1934,9 +1986,9 @@ onUnmounted(() => {
                         <strong>{{ model.display_name }}</strong>
                         <small>{{ model.model_id }}</small>
                       </td>
-                      <td>{{ model.source }}</td>
+                      <td>{{ sourceText(model.source) }}</td>
                       <td><span class="tag" :class="statusClass(model.status)">{{ statusText(model.status) }}</span></td>
-                      <td class="mono">{{ model.path }}</td>
+                      <td class="mono">{{ modelLocation(model) }}</td>
                       <td>{{ formatDate(model.created_at) }}</td>
                       <td class="action-col">
                         <button class="text-button danger-text" type="button" @click="deleteBaseModel(model)">

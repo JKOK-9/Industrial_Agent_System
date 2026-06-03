@@ -10,8 +10,12 @@ class BaseModelDownloadRequest(BaseModel):
 
     display_name: str = Field(min_length=1, max_length=120)
     model_id: str = Field(min_length=1, max_length=300)
-    source: Literal["huggingface", "modelscope", "local"] = "huggingface"
+    source: Literal["huggingface", "modelscope", "local", "api"] = "huggingface"
     local_path: str | None = None
+    api_base_url: str | None = Field(default=None, max_length=1000)
+    api_key: str | None = Field(default=None, max_length=4000)
+    api_model: str | None = Field(default=None, max_length=300)
+    api_provider: str = Field(default="openai_compatible", max_length=80)
 
 
 class TrainingRequest(BaseModel):

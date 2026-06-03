@@ -28,7 +28,8 @@ class ModelService:
         self._cancelled_downloads: set[str] = set()
 
     def list_base_models(self) -> list[dict]:
-        return sorted(self.registry.list("base_models"), key=lambda item: item.get("created_at", ""), reverse=True)
+        models = [_public_base_model(item) for item in self.registry.list("base_models")]
+        return sorted(models, key=lambda item: item.get("created_at", ""), reverse=True)
 
     def list_download_jobs(self) -> list[dict]:
         return sorted(self.registry.list("download_jobs"), key=lambda item: item.get("created_at", ""), reverse=True)
@@ -36,6 +37,11 @@ class ModelService:
     def start_download(self, request: BaseModelDownloadRequest) -> dict:
         if request.source == "local" and not request.local_path:
             raise ValueError("登记本地模型时必须填写本地路径。")
+        if request.source == "api" and not (request.api_base_url or "").strip():
+            raise ValueError("API 接入模型必须填写 API 地址。")
+
+        if request.source == "api":
+            return self._register_api_model(request)
 
         model_id = uuid.uuid4().hex
         job_id = uuid.uuid4().hex
@@ -70,6 +76,47 @@ class ModelService:
             thread.start()
         else:
             self._start_download_process(request, model, job)
+        return job
+
+    def _register_api_model(self, request: BaseModelDownloadRequest) -> dict:
+        model_id = uuid.uuid4().hex
+        job_id = uuid.uuid4().hex
+        api_config = {
+            "provider": request.api_provider or "openai_compatible",
+            "base_url": (request.api_base_url or "").strip(),
+            "api_key": (request.api_key or "").strip(),
+            "model": (request.api_model or request.model_id).strip(),
+        }
+        model = {
+            "id": model_id,
+            "display_name": request.display_name,
+            "model_id": request.model_id,
+            "source": "api",
+            "path": "",
+            "status": "ready",
+            "managed": False,
+            "api_config": api_config,
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+        }
+        job = {
+            "id": job_id,
+            "model_record_id": model_id,
+            "display_name": request.display_name,
+            "source": "api",
+            "status": "succeeded",
+            "log_path": str(LOGS_DIR / f"api-model-{job_id}.log"),
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+        }
+        self.registry.add("base_models", model)
+        self.registry.add("download_jobs", job)
+        log_path = Path(job["log_path"])
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            f"Registered API model: {request.display_name}\nEndpoint: {api_config['base_url']}\nModel: {api_config['model']}\n",
+            encoding="utf-8",
+        )
         return job
 
     def delete_base_model(self, model_id: str) -> bool:
@@ -306,3 +353,19 @@ class ModelService:
     def _ensure_download_has_files(self, destination: Path) -> None:
         if not destination.exists() or not any(item.is_file() for item in destination.rglob("*")):
             raise RuntimeError(f"模型下载目录为空：{destination}")
+
+
+def _public_base_model(model: dict) -> dict:
+    public = dict(model)
+    if public.get("source") != "api":
+        return public
+
+    api_config = dict(public.get("api_config") or {})
+    api_key = str(api_config.get("api_key") or "")
+    if api_key:
+        api_config["api_key"] = f"{api_key[:4]}***{api_key[-4:]}" if len(api_key) > 8 else "***"
+    public["api_config"] = api_config
+    public["api_base_url"] = api_config.get("base_url", "")
+    public["api_model"] = api_config.get("model", public.get("model_id", ""))
+    public["api_key_set"] = bool(api_key)
+    return public

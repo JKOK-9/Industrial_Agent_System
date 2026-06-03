@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 import gc
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 
 DEFAULT_MAX_NEW_TOKENS = int(os.getenv("MODEL_RUNTIME_MAX_NEW_TOKENS", "512"))
 DEFAULT_TEMPERATURE = float(os.getenv("MODEL_RUNTIME_TEMPERATURE", "0.7"))
 DEFAULT_TOP_P = float(os.getenv("MODEL_RUNTIME_TOP_P", "0.9"))
+DEFAULT_API_TIMEOUT_SECONDS = float(os.getenv("MODEL_API_TIMEOUT_SECONDS", "3600"))
 
 
 @dataclass
@@ -103,6 +107,9 @@ class ModelRuntime:
         self._lock = threading.RLock()
 
     def generate_base(self, base_model: dict, prompt: str, options: GenerationOptions | None = None) -> str:
+        if base_model.get("source") == "api":
+            return self._generate_api_base(base_model, prompt, options)
+
         runtime_key = self.runtime_key_for_base(base_model)
         session = self._get_or_load(runtime_key=runtime_key, model_path=base_model.get("path", ""))
         return session.generate(prompt, options)
@@ -195,7 +202,50 @@ class ModelRuntime:
         model.eval()
         return ModelSession(runtime_key=runtime_key, tokenizer=tokenizer, model=model, torch_module=torch)
 
+    def _generate_api_base(self, base_model: dict, prompt: str, options: GenerationOptions | None = None) -> str:
+        options = options or GenerationOptions()
+        api_config = base_model.get("api_config") or {}
+        provider = str(api_config.get("provider") or "openai_compatible")
+        if provider != "openai_compatible":
+            raise RuntimeError(f"暂不支持的 API 模型服务类型：{provider}")
+
+        endpoint = _chat_completions_endpoint(str(api_config.get("base_url") or ""))
+        api_model = str(api_config.get("model") or base_model.get("model_id") or "").strip()
+        if not endpoint:
+            raise RuntimeError("API 接入模型缺少 API 地址。")
+        if not api_model:
+            raise RuntimeError("API 接入模型缺少模型名称。")
+
+        payload = {
+            "model": api_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": options.max_new_tokens,
+            "temperature": options.temperature,
+            "top_p": options.top_p,
+            "stream": False,
+        }
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        api_key = str(api_config.get("api_key") or "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        req = urllib_request.Request(endpoint, data=data, headers=headers, method="POST")
+        try:
+            with urllib_request.urlopen(req, timeout=DEFAULT_API_TIMEOUT_SECONDS) as response:
+                response_payload = json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"API 模型调用失败：HTTP {exc.code} {body[:1000]}") from exc
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"API 模型调用失败：{exc.reason}") from exc
+
+        return _extract_api_text(response_payload)
+
     def _base_runtime_key(self, base_model: dict) -> str:
+        if base_model.get("source") == "api":
+            api_config = base_model.get("api_config") or {}
+            return f"api:{api_config.get('base_url')}:{api_config.get('model') or base_model.get('model_id')}"
         return f"base:{_model_identifier(base_model)}"
 
     def _adapter_runtime_key(self, base_model: dict, fine_tuned_model: dict) -> str:
@@ -210,3 +260,41 @@ def _model_identifier(model: dict) -> str:
     if identifier:
         return str(identifier).strip()
     return str(Path(model.get("path", "")).resolve())
+
+
+def _chat_completions_endpoint(base_url: str) -> str:
+    cleaned = base_url.strip().rstrip("/")
+    if not cleaned:
+        return ""
+    if "chat/completions" in cleaned:
+        return cleaned
+    if cleaned.endswith("/v1"):
+        return f"{cleaned}/chat/completions"
+    return f"{cleaned}/v1/chat/completions"
+
+
+def _extract_api_text(payload: dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] or {}
+        message = first.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, dict) and isinstance(item.get("text"), str):
+                        parts.append(item["text"])
+                    elif isinstance(item, str):
+                        parts.append(item)
+                if parts:
+                    return "\n".join(parts).strip()
+        text = first.get("text")
+        if isinstance(text, str):
+            return text.strip()
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str):
+        return output_text.strip()
+    raise RuntimeError("API 模型响应中未找到可用文本。")
