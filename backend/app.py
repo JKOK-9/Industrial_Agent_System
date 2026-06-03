@@ -10,6 +10,14 @@ from .schemas import (
     AgentWorkflowRequest,
     BaseModelDownloadRequest,
     BatchDeleteRequest,
+    GraphConfirmationRuleListRequest,
+    GraphNodeTypeListRequest,
+    GraphRelationRuleListRequest,
+    GraphRelationTypeListRequest,
+    GraphTripleListRequest,
+    GraphLibraryBuildRequest,
+    GraphFusionBuildRequest,
+    GraphVersionSyncRequest,
     KnowledgeSourceRequest,
     PromptAssetRequest,
     RagConfigRequest,
@@ -19,8 +27,11 @@ from .schemas import (
 from .services.dataset_service import DatasetValidationError
 from .services.agent_api_service import AgentApiService
 from .services.agent_service import AgentService
+from .services.graph_extraction_service import GraphExtractionService
+from .services.graph_service import GraphService
 from .services.model_service import ModelService
 from .services.model_runtime import ModelRuntime
+from .services.neo4j_graph_service import Neo4jGraphService
 from .services.rag_service import RagService
 from .services.resource_service import ResourceService
 from .services.training_service import TrainingService
@@ -32,6 +43,9 @@ model_service = ModelService(registry)
 training_service = TrainingService(registry)
 rag_service = RagService(registry)
 resource_service = ResourceService(registry)
+graph_service = GraphService(registry)
+graph_extraction_service = GraphExtractionService()
+neo4j_graph_service = Neo4jGraphService()
 model_runtime = ModelRuntime()
 agent_service = AgentService(registry, model_runtime, rag_service)
 agent_api_service = AgentApiService(registry, agent_service)
@@ -157,6 +171,154 @@ def create_app() -> Flask:
         payload = request.get_json(silent=True) or {}
         batch_request = BatchDeleteRequest.model_validate(payload)
         return jsonify(resource_service.batch_delete_prompt_assets(batch_request.ids))
+
+    @app.get("/api/graph-builder/node-types")
+    def list_graph_node_types():
+        return jsonify({"items": graph_service.list_node_types()})
+
+    @app.put("/api/graph-builder/node-types")
+    def save_graph_node_types():
+        payload = request.get_json(silent=True) or {}
+        save_request = GraphNodeTypeListRequest.model_validate(payload)
+        return jsonify({"items": graph_service.save_node_types([item.model_dump() for item in save_request.items])})
+
+    @app.get("/api/graph-builder/relation-types")
+    def list_graph_relation_types():
+        return jsonify({"items": graph_service.list_relation_types()})
+
+    @app.put("/api/graph-builder/relation-types")
+    def save_graph_relation_types():
+        payload = request.get_json(silent=True) or {}
+        save_request = GraphRelationTypeListRequest.model_validate(payload)
+        return jsonify({"items": graph_service.save_relation_types([item.model_dump() for item in save_request.items])})
+
+    @app.get("/api/graph-builder/relation-rules")
+    def list_graph_relation_rules():
+        return jsonify({"items": graph_service.list_relation_rules()})
+
+    @app.put("/api/graph-builder/relation-rules")
+    def save_graph_relation_rules():
+        payload = request.get_json(silent=True) or {}
+        save_request = GraphRelationRuleListRequest.model_validate(payload)
+        return jsonify({"items": graph_service.save_relation_rules([item.model_dump() for item in save_request.items])})
+
+    @app.get("/api/graph-builder/triples")
+    def list_graph_triples():
+        return jsonify({"items": graph_service.list_triples()})
+
+    @app.put("/api/graph-builder/triples")
+    def save_graph_triples():
+        payload = request.get_json(silent=True) or {}
+        save_request = GraphTripleListRequest.model_validate(payload)
+        return jsonify({"items": graph_service.save_triples([item.model_dump() for item in save_request.items])})
+
+    @app.post("/api/graph-builder/analyze-table")
+    def analyze_graph_table():
+        table_file = request.files.get("table_file")
+        if not table_file:
+            return jsonify({"detail": "请上传 CSV 或 Excel 文件。"}), 422
+        analysis = graph_extraction_service.analyze_table(
+            table_file,
+            graph_service.list_node_types(),
+            graph_service.list_relation_types(),
+        )
+        task = graph_service.create_analysis_task(
+            {
+                **analysis,
+                "filename": table_file.filename or "",
+                "knowledge_base_name": request.form.get("knowledge_base_name", ""),
+            }
+        )
+        return jsonify({**analysis, "task": task})
+
+    @app.get("/api/graph-builder/analysis-tasks")
+    def list_graph_analysis_tasks():
+        return jsonify({"items": graph_service.list_analysis_tasks()})
+
+    @app.get("/api/graph-builder/libraries")
+    def list_graph_libraries():
+        return jsonify({"items": graph_service.list_libraries()})
+
+    @app.get("/api/graph-builder/analysis-tasks/<task_id>")
+    def get_graph_analysis_task(task_id: str):
+        task = graph_service.get_analysis_task(task_id)
+        if not task:
+            return jsonify({"detail": "分析任务不存在。"}), 404
+        return jsonify({"item": task})
+
+    @app.delete("/api/graph-builder/analysis-tasks/<task_id>")
+    def delete_graph_analysis_task(task_id: str):
+        deleted = graph_service.delete_analysis_task(task_id)
+        if not deleted:
+            return jsonify({"detail": "????????"}), 404
+        return jsonify({"ok": True})
+
+    @app.get("/api/graph-builder/analysis-tasks/<task_id>/triples-preview")
+    def get_graph_analysis_task_triples_preview(task_id: str):
+        try:
+            items = graph_service.build_triples_preview(task_id)
+        except ValueError as exc:
+            return jsonify({"detail": str(exc)}), 404
+        return jsonify({"items": items})
+
+    @app.put("/api/graph-builder/analysis-tasks/<task_id>/confirmation-rules")
+    def update_graph_analysis_task_confirmation_rules(task_id: str):
+        payload = request.get_json(silent=True) or {}
+        save_request = GraphConfirmationRuleListRequest.model_validate(payload)
+        task = graph_service.update_analysis_task_confirmation_rules(task_id, [item.model_dump() for item in save_request.items])
+        if not task:
+            return jsonify({"detail": "分析任务不存在。"}), 404
+        return jsonify({"item": task})
+
+    @app.post("/api/graph-builder/libraries/build")
+    def build_graph_library():
+        payload = request.get_json(silent=True) or {}
+        build_request = GraphLibraryBuildRequest.model_validate(payload)
+        item = graph_service.build_library_version(build_request.model_dump())
+        return jsonify({"item": item}), 201
+
+    @app.post("/api/graph-builder/fusion/build")
+    def build_graph_fusion_library():
+        payload = request.get_json(silent=True) or {}
+        build_request = GraphFusionBuildRequest.model_validate(payload)
+        item = graph_service.build_fusion_library_version(build_request.model_dump())
+        result = {"item": item}
+        if build_request.sync_to_neo4j and item.get("versions"):
+            version = item["versions"][0]
+            sync_payload = {
+                "knowledge_base_id": item["id"],
+                "knowledge_base_name": item["name"],
+                "version_id": version["id"],
+                "version_label": version["label"],
+                "summary": version.get("summary", ""),
+                "domain": item.get("domain", ""),
+                "source": item.get("source", ""),
+                "owner": item.get("owner", ""),
+                "layers": item.get("layers", []),
+                "nodes": version.get("nodes", []),
+                "edges": version.get("edges", []),
+            }
+            result["neo4j"] = neo4j_graph_service.sync_version_graph(sync_payload)
+        return jsonify(result), 201
+
+    @app.get("/api/graph-builder/neo4j/status")
+    def get_graph_neo4j_status():
+        return jsonify(neo4j_graph_service.status())
+
+    @app.post("/api/graph-builder/versions/sync")
+    def sync_graph_version_to_neo4j():
+        payload = request.get_json(silent=True) or {}
+        sync_request = GraphVersionSyncRequest.model_validate(payload)
+        result = neo4j_graph_service.sync_version_graph(sync_request.model_dump())
+        return jsonify({"item": result}), 201
+
+    @app.get("/api/graph-builder/versions/<knowledge_base_id>/<version_id>/visualization")
+    def get_graph_version_visualization(knowledge_base_id: str, version_id: str):
+        try:
+            result = neo4j_graph_service.get_version_visualization(knowledge_base_id, version_id)
+        except ValueError as exc:
+            return jsonify({"detail": str(exc)}), 404
+        return jsonify(result)
 
     @app.get("/api/agents")
     def list_agents():

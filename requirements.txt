@@ -15,3 +15,7 @@ peft>=0.18.0,<=0.18.1
 llamafactory==0.9.5
 safetensors>=0.4
 sentencepiece>=0.2
+httpx>=0.28
+pandas>=2.2
+openpyxl>=3.1
+neo4j>=5.28
