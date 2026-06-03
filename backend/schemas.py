@@ -185,3 +185,48 @@ class GraphLibraryBuildRequest(BaseModel):
     layer_strategy: str = Field(default="", max_length=200)
     description: str = Field(default="", max_length=1000)
     source_types: list[str] = Field(default_factory=list)
+
+
+class GraphFusionSourceVersionNodeItem(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=200)
+    type: str = Field(default="实体", max_length=120)
+
+
+class GraphFusionSourceVersionEdgeItem(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    source: str = Field(min_length=1, max_length=120)
+    target: str = Field(min_length=1, max_length=120)
+    relation: str = Field(default="关联", min_length=1, max_length=120)
+
+
+class GraphFusionSourceVersionItem(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=200)
+    summary: str = Field(default="", max_length=1000)
+    metrics: dict = Field(default_factory=dict)
+    nodes: list[GraphFusionSourceVersionNodeItem] = Field(default_factory=list)
+    edges: list[GraphFusionSourceVersionEdgeItem] = Field(default_factory=list)
+
+
+class GraphFusionSourceGraphItem(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    parent_library_id: str = Field(default="", max_length=120)
+    parent_library_name: str = Field(default="", max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    domain: str = Field(default="", max_length=120)
+    scene: str = Field(default="", max_length=300)
+    entity_count: int = Field(default=0, ge=0)
+    relation_count: int = Field(default=0, ge=0)
+    updated_at: str = Field(default="", max_length=120)
+    version: GraphFusionSourceVersionItem
+
+
+class GraphFusionBuildRequest(BaseModel):
+    knowledge_base_name: str = Field(min_length=1, max_length=200)
+    fusion_mode: str = Field(min_length=1, max_length=120)
+    conflict_rule: str = Field(default="", max_length=300)
+    description: str = Field(default="", max_length=1000)
+    selected_graph_ids: list[str] = Field(default_factory=list, min_length=2)
+    source_graphs: list[GraphFusionSourceGraphItem] = Field(default_factory=list)
+    sync_to_neo4j: bool = False

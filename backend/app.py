@@ -16,6 +16,7 @@ from .schemas import (
     GraphRelationTypeListRequest,
     GraphTripleListRequest,
     GraphLibraryBuildRequest,
+    GraphFusionBuildRequest,
     GraphVersionSyncRequest,
     KnowledgeSourceRequest,
     PromptAssetRequest,
@@ -265,6 +266,30 @@ def create_app() -> Flask:
         build_request = GraphLibraryBuildRequest.model_validate(payload)
         item = graph_service.build_library_version(build_request.model_dump())
         return jsonify({"item": item}), 201
+
+    @app.post("/api/graph-builder/fusion/build")
+    def build_graph_fusion_library():
+        payload = request.get_json(silent=True) or {}
+        build_request = GraphFusionBuildRequest.model_validate(payload)
+        item = graph_service.build_fusion_library_version(build_request.model_dump())
+        result = {"item": item}
+        if build_request.sync_to_neo4j and item.get("versions"):
+            version = item["versions"][0]
+            sync_payload = {
+                "knowledge_base_id": item["id"],
+                "knowledge_base_name": item["name"],
+                "version_id": version["id"],
+                "version_label": version["label"],
+                "summary": version.get("summary", ""),
+                "domain": item.get("domain", ""),
+                "source": item.get("source", ""),
+                "owner": item.get("owner", ""),
+                "layers": item.get("layers", []),
+                "nodes": version.get("nodes", []),
+                "edges": version.get("edges", []),
+            }
+            result["neo4j"] = neo4j_graph_service.sync_version_graph(sync_payload)
+        return jsonify(result), 201
 
     @app.get("/api/graph-builder/neo4j/status")
     def get_graph_neo4j_status():

@@ -58,8 +58,8 @@ const showKnowledgeForm = ref(false);
 const showPromptForm = ref(false);
 const selectedKnowledgeIds = ref([]);
 const selectedPromptIds = ref([]);
-const selectedFusionGraphIds = ref(["kg-equip-compressor", "kg-process-compressor"]);
-const activeFusionLibraryId = ref("kg-equip");
+const selectedFusionGraphIds = ref([]);
+const activeFusionLibraryId = ref("");
 const fusionSearch = ref("");
 const selectedWorkflowNodeId = ref("input-node");
 const workflowTestInput = ref("");
@@ -73,8 +73,8 @@ const createSourceFiles = ref([]);
 const createImageFiles = ref([]);
 const graphAnalysisTaskId = ref("");
 const graphAnalysisTasks = ref([]);
-const selectedGraphLibraryId = ref("kg-equip");
-const selectedGraphVersionId = ref("v3");
+const selectedGraphLibraryId = ref("");
+const selectedGraphVersionId = ref("");
 const graphBuilderLoaded = ref(false);
 const neo4jStatus = ref({ configured: false, connected: false, database: "neo4j", uri: "" });
 const graphVisualization = ref({ version: null, nodes: [], relationships: [], metrics: null });
@@ -271,38 +271,7 @@ const graphRelationRules = ref([
   { id: "rule-4", source_type: "组织", relation: "负责", target_type: "设备", example: "维保二班 -> 负责 -> 1#压缩机" },
 ]);
 
-const graphExtractedTriples = ref([
-  {
-    id: "triple-1",
-    source: "压缩机",
-    source_type: "设备",
-    relation: "包含",
-    target: "轴承",
-    target_type: "部件",
-    origin: "测试数据_3.xlsx",
-    status: "待确认",
-  },
-  {
-    id: "triple-2",
-    source: "润滑不足",
-    source_type: "故障",
-    relation: "导致",
-    target: "高温告警",
-    target_type: "故障",
-    origin: "测试数据_3.xlsx",
-    status: "已确认",
-  },
-  {
-    id: "triple-3",
-    source: "转子装配",
-    source_type: "工艺步骤",
-    relation: "使用",
-    target: "主轴轴承",
-    target_type: "备件",
-    origin: "测试数据_3.xlsx",
-    status: "待确认",
-  },
-]);
+const graphExtractedTriples = ref([]);
 
 const graphFusionForm = reactive({
   name: "压缩机综合知识图谱",
@@ -320,62 +289,9 @@ const graphDatabaseForm = reactive({
   syncMode: "按主题导出后构图",
 });
 
-const graphAlignmentPreview = ref([
-  {
-    id: "align-1",
-    left: "设备维护知识库 / 压缩机维护子库 / 压缩机机组",
-    right: "装配工艺知识库 / 压缩机装配子库 / 压缩机总成",
-    confidence: "高",
-    rule: "同义词 + 编码相似度",
-    decision: "自动合并",
-  },
-  {
-    id: "align-2",
-    left: "设备主数据知识库 / 设备台账子库 / 1#压缩机",
-    right: "设备维护知识库 / 压缩机维护子库 / 压缩机1号",
-    confidence: "高",
-    rule: "设备编码一致",
-    decision: "自动合并",
-  },
-  {
-    id: "align-3",
-    left: "装配工艺知识库 / 质检工艺子库 / 力矩校验",
-    right: "设备维护知识库 / 压缩机维护子库 / 螺栓力矩检查",
-    confidence: "中",
-    rule: "语义相似",
-    decision: "待确认",
-  },
-]);
+const graphAlignmentPreview = ref([]);
 
-const graphConflictItems = ref([
-  {
-    id: "conflict-1",
-    field: "责任班组",
-    entity: "1#压缩机",
-    left: "总装一班",
-    right: "维保二班",
-    severity: "高",
-    suggestion: "保留高可信版本并记录来源",
-  },
-  {
-    id: "conflict-2",
-    field: "备件编码",
-    entity: "主轴轴承",
-    left: "BR-6208-A",
-    right: "6208-ZZ",
-    severity: "中",
-    suggestion: "人工确认后建立替代件关系",
-  },
-  {
-    id: "conflict-3",
-    field: "工艺步骤名称",
-    entity: "转子校准",
-    left: "动平衡校验",
-    right: "转子平衡检测",
-    severity: "中",
-    suggestion: "并存保留并增加同义关系",
-  },
-]);
+const graphConflictItems = ref([]);
 
 
 const graphLibraries = ref([
@@ -569,7 +485,8 @@ const graphLibraries = ref([
     ],
   },
 ]);
-const defaultGraphLibraries = JSON.parse(JSON.stringify(graphLibraries.value));
+const defaultGraphLibraries = [];
+graphLibraries.value = [];
 
 const workflowForm = reactive({
   name: "",
@@ -595,10 +512,27 @@ const latestRagModels = computed(() => ragModels.value.slice(0, 5));
 const filteredKnowledgeSources = computed(() => filterResources(knowledgeSources.value));
 const filteredPromptAssets = computed(() => filterResources(promptAssets.value));
 const graphHeaderOptions = computed(() => graphRawHeaders.value.map((item) => item.name));
+function getLibraryLatestVersionStats(library) {
+  const latestVersion = Array.isArray(library?.versions) ? library.versions[0] : null;
+  const versionMetrics = latestVersion?.metrics || {};
+  const versionNodeCount = Array.isArray(latestVersion?.nodes) ? latestVersion.nodes.length : null;
+  const versionEdgeCount = Array.isArray(latestVersion?.edges) ? latestVersion.edges.length : null;
+  return {
+    entities: versionNodeCount ?? versionMetrics.entities ?? library?.entity_count ?? 0,
+    relations: versionEdgeCount ?? versionMetrics.relations ?? library?.relation_count ?? 0,
+  };
+}
+
 const graphLibraryCount = computed(() => graphLibraries.value.length);
-const graphVersionCount = computed(() => graphLibraries.value.reduce((sum, item) => sum + item.versions.length, 0));
-const graphEntityCount = computed(() => graphLibraries.value.reduce((sum, item) => sum + item.entity_count, 0));
-const graphRelationCount = computed(() => graphLibraries.value.reduce((sum, item) => sum + item.relation_count, 0));
+const graphVersionCount = computed(() =>
+  graphLibraries.value.reduce((sum, item) => sum + (Array.isArray(item.versions) ? item.versions.length : 0), 0),
+);
+const graphEntityCount = computed(() =>
+  graphLibraries.value.reduce((sum, item) => sum + getLibraryLatestVersionStats(item).entities, 0),
+);
+const graphRelationCount = computed(() =>
+  graphLibraries.value.reduce((sum, item) => sum + getLibraryLatestVersionStats(item).relations, 0),
+);
 const activeFusionLibrary = computed(() => graphLibraries.value.find((item) => item.id === activeFusionLibraryId.value) || graphLibraries.value[0]);
 const activeFusionChildren = computed(() => {
   const keyword = fusionSearch.value.trim().toLowerCase();
@@ -1439,12 +1373,122 @@ function toggleFusionGraph(id) {
     : [...selectedFusionGraphIds.value, id];
 }
 
-function submitGraphFusion() {
+function buildFusionSourceGraphsPayload() {
+  const normalizeVersion = (version) => {
+    const snapshot = JSON.parse(JSON.stringify(version || {}));
+    const nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
+    const nodeLabelMap = new Map(nodes.map((node) => [node.label, node.id]));
+    const edges = (snapshot.edges || [])
+      .map((edge, index) => {
+        if (edge && typeof edge === "object") {
+          return {
+            id: edge.id || `${snapshot.id || "version"}-edge-${index + 1}`,
+            source: edge.source,
+            target: edge.target,
+            relation: edge.relation || "关联",
+          };
+        }
+        if (typeof edge === "string") {
+          const parts = edge.split("->").map((item) => item.trim()).filter(Boolean);
+          if (parts.length < 2) return null;
+          const sourceLabel = parts[0];
+          const targetLabel = parts[parts.length - 1];
+          const relation = parts.length >= 3 ? parts.slice(1, -1).join(" -> ") : "关联";
+          const source = nodeLabelMap.get(sourceLabel);
+          const target = nodeLabelMap.get(targetLabel);
+          if (!source || !target) return null;
+          return {
+            id: `${snapshot.id || "version"}-edge-${index + 1}`,
+            source,
+            target,
+            relation,
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+    return {
+      ...snapshot,
+      nodes,
+      edges,
+    };
+  };
+
+  return selectedFusionGraphIds.value
+    .map((selectedId) => {
+      for (const library of graphLibraries.value) {
+        if (library.id === selectedId && library.versions?.length) {
+          return {
+            id: library.id,
+            parent_library_id: library.id,
+            parent_library_name: library.name,
+            name: library.name,
+            domain: library.domain || "",
+            scene: library.domain || "",
+            entity_count: library.entity_count || 0,
+            relation_count: library.relation_count || 0,
+            updated_at: library.updated_at || "",
+            version: normalizeVersion(library.versions[0]),
+          };
+        }
+        const child = (library.children || []).find((item) => item.id === selectedId);
+        if (child && library.versions?.length) {
+          return {
+            id: child.id,
+            parent_library_id: library.id,
+            parent_library_name: library.name,
+            name: child.name,
+            domain: library.domain || "",
+            scene: child.scene || "",
+            entity_count: child.entity_count || 0,
+            relation_count: child.relation_count || 0,
+            updated_at: child.updated_at || "",
+            version: normalizeVersion(library.versions[0]),
+          };
+        }
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
+async function submitGraphFusion() {
   if (selectedFusionGraphIds.value.length < 2) {
     showToast("请至少选择两个已有知识图谱用于融合");
     return;
   }
-  showToast("知识图谱融合任务已提交");
+  if (!graphFusionForm.name.trim()) {
+    showToast("请输入融合后的图谱名称");
+    return;
+  }
+  const sourceGraphs = buildFusionSourceGraphsPayload();
+  if (sourceGraphs.length < 2) {
+    showToast("当前选中的子知识库缺少可融合的版本数据");
+    return;
+  }
+  try {
+    const payload = await fetchJSON("/api/graph-builder/fusion/build", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        knowledge_base_name: graphFusionForm.name,
+        fusion_mode: graphFusionForm.fusionMode,
+        conflict_rule: graphFusionForm.conflictRule,
+        description: graphFusionForm.description,
+        selected_graph_ids: selectedFusionGraphIds.value,
+        source_graphs: sourceGraphs,
+        sync_to_neo4j: Boolean(neo4jStatus.value.connected),
+      }),
+    });
+    await loadGraphLibraries();
+    selectedGraphLibraryId.value = payload.item.id;
+    selectedGraphVersionId.value = payload.item.versions?.[0]?.id || "";
+    currentPage.value = "graphVersions";
+    await Promise.all([loadNeo4jStatus(), loadGraphVisualization()]);
+    showToast("图谱融合版本已生成，可在版本管理中查看");
+  } catch (error) {
+    showToast(error.message || "图谱融合构建失败");
+  }
 }
 
 function submitDbGraphBuild() {
