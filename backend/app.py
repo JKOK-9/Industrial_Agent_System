@@ -224,14 +224,14 @@ def create_app() -> Flask:
     def run_agent(agent_id: str):
         payload = request.get_json(silent=True) or {}
         run_request = AgentRunRequest.model_validate(payload)
-        return jsonify(agent_service.run_agent(agent_id, run_request.input_text))
+        return jsonify(agent_api_service.run_agent_once(agent_id, run_request.input_text))
 
     @app.post("/api/agents/preview-run")
     def run_agent_preview():
         payload = request.get_json(silent=True) or {}
         agent_request = AgentWorkflowRequest.model_validate(payload.get("agent") or {})
         run_request = AgentRunRequest.model_validate({"input_text": payload.get("input_text", "")})
-        return jsonify(agent_service.run_preview(agent_request, run_request.input_text))
+        return jsonify(agent_api_service.run_preview_once(agent_request, run_request.input_text))
 
     @app.delete("/api/download-jobs/<job_id>")
     def delete_download_job_history(job_id: str):

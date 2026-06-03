@@ -22,6 +22,14 @@ LLAMAFACTORY_WORKDIR = os.getenv("LLAMAFACTORY_WORKDIR")
 CORS_ORIGINS = [item.strip() for item in os.getenv("AGENT_SYSTEM_CORS_ORIGINS", "*").split(",") if item.strip()]
 CORS_SUPPORTS_CREDENTIALS = os.getenv("AGENT_SYSTEM_CORS_SUPPORTS_CREDENTIALS", "false").lower() in {"1", "true", "yes"}
 
+AGENT_SERVICE_HOST = os.getenv("AGENT_SERVICE_HOST", "127.0.0.1").strip() or "127.0.0.1"
+AGENT_SERVICE_PUBLIC_HOST = os.getenv("AGENT_SERVICE_PUBLIC_HOST", "").strip()
+AGENT_SERVICE_PUBLIC_SCHEME = os.getenv("AGENT_SERVICE_PUBLIC_SCHEME", "").strip()
+AGENT_SERVICE_PORT_START = int(os.getenv("AGENT_SERVICE_PORT_START", "18080"))
+AGENT_SERVICE_PORT_END = int(os.getenv("AGENT_SERVICE_PORT_END", "18180"))
+AGENT_SERVICE_START_TIMEOUT_SECONDS = float(os.getenv("AGENT_SERVICE_START_TIMEOUT_SECONDS", "30"))
+AGENT_RUN_TIMEOUT_SECONDS = float(os.getenv("AGENT_RUN_TIMEOUT_SECONDS", "3600"))
+
 
 def ensure_runtime_dirs() -> None:
     for path in [
